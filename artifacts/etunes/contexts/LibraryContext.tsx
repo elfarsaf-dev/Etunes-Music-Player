@@ -437,33 +437,82 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
         let finalUri = downloadResult.uri;
         if (mediaGranted) {
           try {
+            // createAssetAsync places the file in the default /Music folder.
             const asset = await MediaLibrary.createAssetAsync(
               downloadResult.uri,
             );
+            let assetForPlayback: MediaLibrary.Asset = asset;
+
             try {
-              const album = await MediaLibrary.getAlbumAsync("etunes");
-              if (album) {
+              const existingAlbum =
+                await MediaLibrary.getAlbumAsync("etunes");
+              if (existingAlbum) {
+                // copy=false asks MediaLibrary to MOVE the asset into the
+                // album. On Android scoped storage this often falls back to
+                // a copy, leaving the original behind in /Music.
                 await MediaLibrary.addAssetsToAlbumAsync(
                   [asset],
-                  album,
+                  existingAlbum,
                   false,
                 );
               } else {
                 await MediaLibrary.createAlbumAsync("etunes", asset, false);
               }
+
+              // Detect & clean up the duplicate that scoped storage leaves
+              // behind in /Music. The album operation should leave us with
+              // the asset inside /Music/etunes — if instead the original is
+              // still in /Music, find the duplicate sitting in the etunes
+              // album and delete the /Music original.
+              try {
+                const album = await MediaLibrary.getAlbumAsync("etunes");
+                const info = await MediaLibrary.getAssetInfoAsync(asset);
+                const currentUri =
+                  info?.localUri ?? info?.uri ?? asset.uri ?? "";
+                const inEtunesFolder = /\/etunes\//i.test(currentUri);
+
+                if (album && !inEtunesFolder) {
+                  // Look for the moved/copied twin inside the etunes album.
+                  const page = await MediaLibrary.getAssetsAsync({
+                    album,
+                    mediaType: MediaLibrary.MediaType.audio,
+                    first: 1000,
+                    sortBy: [MediaLibrary.SortBy.creationTime],
+                  });
+                  const twin = page.assets.find(
+                    (a) =>
+                      a.id !== asset.id && a.filename === asset.filename,
+                  );
+                  if (twin) {
+                    // Keep the twin (already inside /Music/etunes), drop
+                    // the original from /Music.
+                    try {
+                      await MediaLibrary.deleteAssetsAsync([asset]);
+                    } catch {
+                      // best effort — if delete fails the user can clean
+                      // up manually but at least we play the right one.
+                    }
+                    assetForPlayback = twin;
+                  }
+                }
+              } catch {
+                // best-effort dedupe; keep going either way
+              }
             } catch {
               // Album ops are best-effort
             }
+
             // Prefer the public file path for playback when available
             try {
-              const info = await MediaLibrary.getAssetInfoAsync(asset);
+              const info =
+                await MediaLibrary.getAssetInfoAsync(assetForPlayback);
               if (info?.localUri) {
                 finalUri = info.localUri;
-              } else if (asset.uri) {
-                finalUri = asset.uri;
+              } else if (assetForPlayback.uri) {
+                finalUri = assetForPlayback.uri;
               }
             } catch {
-              if (asset.uri) finalUri = asset.uri;
+              if (assetForPlayback.uri) finalUri = assetForPlayback.uri;
             }
           } catch {
             // MediaLibrary save failed — keep the staging copy

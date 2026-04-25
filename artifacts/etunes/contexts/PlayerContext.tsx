@@ -146,6 +146,41 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     return playerRef.current;
   }, []);
 
+  // Wait for the player to finish its initial load/buffer before calling
+  // play(). Calling play() immediately after replace() races the loader and
+  // causes the audio to stutter at the start of streamed tracks (the user
+  // workaround was to play/pause once after start). A short timeout is used
+  // as a safety fallback so we never deadlock if no status update arrives.
+  const playWhenReady = useCallback(
+    (player: AudioPlayer, timeoutMs = 2000) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        try {
+          sub.remove();
+        } catch {
+          // ignore
+        }
+        try {
+          player.play();
+        } catch {
+          // ignore
+        }
+      };
+      const sub = player.addListener("playbackStatusUpdate", (s) => {
+        // Wait until the source is loaded AND not still buffering.
+        const loaded = s.isLoaded === true;
+        const buffering =
+          (s as { isBuffering?: boolean }).isBuffering === true ||
+          (s as { playbackState?: string }).playbackState === "buffering";
+        if (loaded && !buffering) finish();
+      });
+      setTimeout(finish, timeoutMs);
+    },
+    [],
+  );
+
   const loadAndPlay = useCallback(
     async (track: Track) => {
       const player = ensurePlayer();
@@ -171,7 +206,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         }
         if (!uri) throw new Error("No playable source");
         player.replace({ uri });
-        player.play();
+        playWhenReady(player);
         updateLockScreen(track);
         await pushRecent(track);
       } catch (err) {
@@ -180,7 +215,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         setErrorMessage(msg);
       }
     },
-    [ensurePlayer, pushRecent, updateLockScreen],
+    [ensurePlayer, playWhenReady, pushRecent, updateLockScreen],
   );
 
   const handleFinished = useCallback(async () => {
