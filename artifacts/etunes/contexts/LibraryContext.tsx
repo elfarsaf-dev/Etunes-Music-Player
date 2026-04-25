@@ -61,13 +61,10 @@ function makeFavoritesPlaylist(): Playlist {
   };
 }
 
-async function getDownloadsDir(): Promise<string | null> {
-  if (Platform.OS === "web") return null;
-  const baseDir = FileSystem.documentDirectory;
-  if (!baseDir) return null;
-  const dir = baseDir.endsWith("/")
-    ? `${baseDir}downloads/`
-    : `${baseDir}/downloads/`;
+async function tryEnsureDir(base: string | null): Promise<string | null> {
+  if (!base) return null;
+  const normalized = base.endsWith("/") ? base : `${base}/`;
+  const dir = `${normalized}downloads/`;
   try {
     const info = await FileSystem.getInfoAsync(dir);
     if (!info.exists) {
@@ -77,6 +74,19 @@ async function getDownloadsDir(): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+async function getDownloadsDir(): Promise<string | null> {
+  if (Platform.OS === "web") return null;
+  // Try document dir first (persistent), then cache dir as fallback.
+  // Some Android variants restrict makeDirectoryAsync on document dir;
+  // cacheDirectory is always writable for the app.
+  return (
+    (await tryEnsureDir(FileSystem.documentDirectory)) ??
+    (await tryEnsureDir(FileSystem.cacheDirectory)) ??
+    FileSystem.cacheDirectory ??
+    FileSystem.documentDirectory
+  );
 }
 
 function safeFileName(input: string): string {
@@ -361,14 +371,29 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
 
       setDownloadStatus((prev) => ({ ...prev, [track.id]: "downloading" }));
       try {
+        // Ask for media perm UPFRONT so download can land in public Music/etunes
+        // folder (visible in File Manager and music apps).
+        let mediaGranted = false;
+        try {
+          let perm = await MediaLibrary.getPermissionsAsync();
+          if (perm.status !== "granted" && perm.canAskAgain) {
+            perm = await MediaLibrary.requestPermissionsAsync();
+            setPermission(perm.status);
+          }
+          mediaGranted = perm.status === "granted";
+        } catch {
+          mediaGranted = false;
+        }
+
         // Resolve playable stream URL
         const resolved = await api.resolveStream(apiKey, track.spotifyUrl);
 
-        // Save into app-private downloads directory
-        const dir = await getDownloadsDir();
-        if (!dir) {
+        // Pick a writable temp location. Prefer cache (always writable);
+        // fall back to document dir.
+        const stagingDir = await getDownloadsDir();
+        if (!stagingDir) {
           throw new Error(
-            "Tidak bisa akses folder download. Coba restart aplikasi.",
+            "Perangkat tidak menyediakan folder yang bisa ditulis. Coba restart HP.",
           );
         }
 
@@ -378,12 +403,12 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
           return m ? `.${m[1]}` : ".mp3";
         })();
         const fileName = `${safeFileName(track.id)}${ext}`;
-        const destinationUri = `${dir}${fileName}`;
+        const stagingUri = `${stagingDir}${fileName}`;
 
         try {
-          const existing = await FileSystem.getInfoAsync(destinationUri);
+          const existing = await FileSystem.getInfoAsync(stagingUri);
           if (existing.exists) {
-            await FileSystem.deleteAsync(destinationUri, { idempotent: true });
+            await FileSystem.deleteAsync(stagingUri, { idempotent: true });
           }
         } catch {
           // ignore — best effort cleanup before re-download
@@ -393,7 +418,7 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
         try {
           downloadResult = await FileSystem.downloadAsync(
             resolved.streamUrl,
-            destinationUri,
+            stagingUri,
           );
         } catch (e: unknown) {
           const msg = e instanceof Error ? e.message : String(e);
@@ -406,22 +431,12 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
           );
         }
 
-        const finalInfo = await FileSystem.getInfoAsync(downloadResult.uri);
-        const fileSize =
-          finalInfo.exists && "size" in finalInfo
-            ? (finalInfo.size as number)
-            : 0;
-
-        // Try to also save to the device's Music library so it shows up in
-        // the system music app. Fail silently if permission isn't granted —
-        // playback from the app-private copy still works.
-        try {
-          let perm = await MediaLibrary.getPermissionsAsync();
-          if (perm.status !== "granted" && perm.canAskAgain) {
-            perm = await MediaLibrary.requestPermissionsAsync();
-            setPermission(perm.status);
-          }
-          if (perm.status === "granted") {
+        // Hand the file to MediaStore so it lands in the public
+        // /storage/emulated/0/Music/etunes/ folder. Asset gets a stable
+        // file:// URI we can play from later.
+        let finalUri = downloadResult.uri;
+        if (mediaGranted) {
+          try {
             const asset = await MediaLibrary.createAssetAsync(
               downloadResult.uri,
             );
@@ -437,16 +452,35 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
                 await MediaLibrary.createAlbumAsync("etunes", asset, false);
               }
             } catch {
-              // Album operations are best-effort
+              // Album ops are best-effort
             }
+            // Prefer the public file path for playback when available
+            try {
+              const info = await MediaLibrary.getAssetInfoAsync(asset);
+              if (info?.localUri) {
+                finalUri = info.localUri;
+              } else if (asset.uri) {
+                finalUri = asset.uri;
+              }
+            } catch {
+              if (asset.uri) finalUri = asset.uri;
+            }
+          } catch {
+            // MediaLibrary save failed — keep the staging copy
           }
-        } catch {
-          // Best-effort — never block the download record
         }
+
+        const finalInfo = await FileSystem.getInfoAsync(finalUri).catch(
+          () => null,
+        );
+        const fileSize =
+          finalInfo && finalInfo.exists && "size" in finalInfo
+            ? (finalInfo.size as number)
+            : 0;
 
         const record: DownloadRecord = {
           trackId: track.id,
-          uri: downloadResult.uri,
+          uri: finalUri,
           size: fileSize,
           downloadedAt: Date.now(),
         };
@@ -455,7 +489,7 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
 
         const nextMeta = {
           ...downloadedMeta,
-          [track.id]: { ...track, localUri: downloadResult.uri },
+          [track.id]: { ...track, localUri: finalUri },
         };
         await persistDownloadedMeta(nextMeta);
 
