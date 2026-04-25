@@ -1,0 +1,451 @@
+import { Feather } from "@expo/vector-icons";
+import { useQuery } from "@tanstack/react-query";
+import { Image } from "expo-image";
+import { LinearGradient } from "expo-linear-gradient";
+import { useRouter } from "expo-router";
+import React, { useEffect, useState } from "react";
+import {
+  ActivityIndicator,
+  FlatList,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+
+import { AddToPlaylistSheet } from "@/components/AddToPlaylistSheet";
+import { SongRow } from "@/components/SongRow";
+import { useAuth } from "@/contexts/AuthContext";
+import { useLibrary } from "@/contexts/LibraryContext";
+import { usePlayer } from "@/contexts/PlayerContext";
+import { useColors, useRadius } from "@/hooks/useColors";
+import { api } from "@/lib/api";
+import { storage } from "@/lib/storage";
+import type { SearchResultRaw, Track } from "@/lib/types";
+import { parseDurationStr, splitTitle } from "@/lib/utils";
+
+function toTrack(r: SearchResultRaw): Track {
+  const { artist, title } = r.artist
+    ? { artist: r.artist, title: r.title }
+    : splitTitle(r.title);
+  return {
+    id: `online:${r.url}`,
+    title,
+    artist,
+    album: r.album,
+    thumbnail: r.thumbnail,
+    duration: parseDurationStr(r.duration),
+    source: "online",
+    spotifyUrl: r.url,
+  };
+}
+
+export default function HomeScreen() {
+  const colors = useColors();
+  const radius = useRadius();
+  const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const { apiKey } = useAuth();
+  const { current } = usePlayer();
+  const { playQueue } = usePlayer();
+  const { isFavorite, toggleFavorite } = useLibrary();
+
+  const [query, setQuery] = useState("");
+  const [submitted, setSubmitted] = useState("");
+  const [recents, setRecents] = useState<Track[]>([]);
+  const [history, setHistory] = useState<string[]>([]);
+  const [pickerTrack, setPickerTrack] = useState<Track | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      const r = (await storage.get<Track[]>(storage.keys.recent)) ?? [];
+      const h = (await storage.get<string[]>(storage.keys.searchHistory)) ?? [];
+      setRecents(r);
+      setHistory(h);
+    })();
+  }, [current]);
+
+  const search = useQuery({
+    queryKey: ["search", submitted, apiKey],
+    enabled: !!submitted && !!apiKey,
+    queryFn: async () => {
+      if (!apiKey) return [];
+      return api.search(apiKey, submitted);
+    },
+  });
+
+  const handleSubmit = async () => {
+    const q = query.trim();
+    if (!q) return;
+    setSubmitted(q);
+    const next = [q, ...history.filter((h) => h !== q)].slice(0, 8);
+    setHistory(next);
+    await storage.set(storage.keys.searchHistory, next);
+  };
+
+  const results = (search.data ?? []).map(toTrack);
+
+  const handlePlayResult = (idx: number) => {
+    playQueue(results, idx);
+    router.push("/player");
+  };
+
+  return (
+    <View style={[styles.root, { backgroundColor: colors.background }]}>
+      <LinearGradient
+        colors={[colors.gradientStart + "40", colors.background]}
+        locations={[0, 0.5]}
+        style={[styles.headerGradient, { paddingTop: insets.top }]}
+      >
+        <View style={styles.headerInner}>
+          <Text style={[styles.greeting, { color: colors.foreground }]}>
+            Discover
+          </Text>
+          <Text style={[styles.subtitle, { color: colors.mutedForeground }]}>
+            Search for any song, anywhere
+          </Text>
+
+          <View
+            style={[
+              styles.searchBar,
+              {
+                backgroundColor: colors.cardElevated,
+                borderRadius: radius,
+                borderColor: colors.border,
+              },
+            ]}
+          >
+            <Feather name="search" size={18} color={colors.mutedForeground} />
+            <TextInput
+              value={query}
+              onChangeText={setQuery}
+              placeholder="Songs, artists, albums..."
+              placeholderTextColor={colors.mutedForeground}
+              style={[styles.searchInput, { color: colors.foreground }]}
+              returnKeyType="search"
+              onSubmitEditing={handleSubmit}
+            />
+            {query ? (
+              <Pressable
+                onPress={() => {
+                  setQuery("");
+                  setSubmitted("");
+                }}
+                hitSlop={8}
+              >
+                <Feather name="x" size={18} color={colors.mutedForeground} />
+              </Pressable>
+            ) : null}
+          </View>
+        </View>
+      </LinearGradient>
+
+      <FlatList
+        data={submitted ? results : []}
+        keyExtractor={(t) => t.id}
+        contentContainerStyle={{ paddingBottom: 180 }}
+        ListHeaderComponent={
+          submitted ? (
+            search.isFetching ? (
+              <View style={styles.loadingWrap}>
+                <ActivityIndicator color={colors.primary} />
+              </View>
+            ) : search.error ? (
+              <ErrorState
+                message={
+                  search.error instanceof Error
+                    ? search.error.message
+                    : "Search failed"
+                }
+              />
+            ) : results.length === 0 ? (
+              <EmptyState
+                icon="search"
+                title="No results"
+                subtitle={`Nothing for "${submitted}"`}
+              />
+            ) : (
+              <SectionHeader title={`Results for "${submitted}"`} />
+            )
+          ) : (
+            <BrowseHome
+              recents={recents}
+              history={history}
+              onSearch={(q) => {
+                setQuery(q);
+                setSubmitted(q);
+              }}
+              onPlayRecent={(t, idx) => {
+                playQueue(recents, idx);
+                router.push("/player");
+              }}
+            />
+          )
+        }
+        renderItem={({ item, index }) => (
+          <SongRow
+            track={item}
+            onPress={() => handlePlayResult(index)}
+            onMore={() => setPickerTrack(item)}
+            rightSlot={
+              <Pressable
+                onPress={() => toggleFavorite(item)}
+                hitSlop={8}
+                style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+              >
+                <Feather
+                  name="heart"
+                  size={18}
+                  color={
+                    isFavorite(item.id)
+                      ? colors.accent
+                      : colors.mutedForeground
+                  }
+                />
+              </Pressable>
+            }
+          />
+        )}
+      />
+
+      <AddToPlaylistSheet
+        visible={!!pickerTrack}
+        track={pickerTrack}
+        onClose={() => setPickerTrack(null)}
+      />
+    </View>
+  );
+}
+
+function BrowseHome({
+  recents,
+  history,
+  onSearch,
+  onPlayRecent,
+}: {
+  recents: Track[];
+  history: string[];
+  onSearch: (q: string) => void;
+  onPlayRecent: (track: Track, index: number) => void;
+}) {
+  const colors = useColors();
+  const radius = useRadius();
+  return (
+    <View style={{ paddingTop: 8 }}>
+      {history.length > 0 ? (
+        <View style={styles.section}>
+          <SectionHeader title="Recent searches" />
+          <View style={styles.chips}>
+            {history.map((h) => (
+              <Pressable
+                key={h}
+                onPress={() => onSearch(h)}
+                style={({ pressed }) => [
+                  styles.chip,
+                  {
+                    backgroundColor: colors.cardElevated,
+                    borderColor: colors.border,
+                    borderRadius: 999,
+                    opacity: pressed ? 0.7 : 1,
+                  },
+                ]}
+              >
+                <Feather name="clock" size={12} color={colors.mutedForeground} />
+                <Text
+                  style={[styles.chipText, { color: colors.foreground }]}
+                  numberOfLines={1}
+                >
+                  {h}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+      ) : null}
+
+      {recents.length > 0 ? (
+        <View style={styles.section}>
+          <SectionHeader title="Recently played" />
+          <FlatList
+            data={recents.slice(0, 10)}
+            horizontal
+            keyExtractor={(t) => t.id}
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}
+            renderItem={({ item, index }) => (
+              <Pressable
+                onPress={() => onPlayRecent(item, index)}
+                style={({ pressed }) => [
+                  styles.recentCard,
+                  {
+                    backgroundColor: colors.cardElevated,
+                    borderRadius: radius,
+                    opacity: pressed ? 0.85 : 1,
+                  },
+                ]}
+              >
+                {item.thumbnail ? (
+                  <Image
+                    source={{ uri: item.thumbnail }}
+                    style={[styles.recentArt, { borderRadius: radius - 4 }]}
+                    contentFit="cover"
+                  />
+                ) : (
+                  <LinearGradient
+                    colors={[colors.gradientStart, colors.gradientEnd]}
+                    style={[styles.recentArt, { borderRadius: radius - 4 }]}
+                  >
+                    <Feather name="music" size={28} color="#fff" />
+                  </LinearGradient>
+                )}
+                <Text
+                  style={[styles.recentTitle, { color: colors.foreground }]}
+                  numberOfLines={1}
+                >
+                  {item.title}
+                </Text>
+                <Text
+                  style={[
+                    styles.recentArtist,
+                    { color: colors.mutedForeground },
+                  ]}
+                  numberOfLines={1}
+                >
+                  {item.artist}
+                </Text>
+              </Pressable>
+            )}
+          />
+        </View>
+      ) : null}
+
+      {history.length === 0 && recents.length === 0 ? (
+        <View style={{ paddingTop: 60 }}>
+          <EmptyState
+            icon="music"
+            title="Start exploring"
+            subtitle="Search for your favorite track to get started"
+          />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function SectionHeader({ title }: { title: string }) {
+  const colors = useColors();
+  return (
+    <Text style={[styles.sectionHeader, { color: colors.foreground }]}>
+      {title}
+    </Text>
+  );
+}
+
+function EmptyState({
+  icon,
+  title,
+  subtitle,
+}: {
+  icon: keyof typeof Feather.glyphMap;
+  title: string;
+  subtitle: string;
+}) {
+  const colors = useColors();
+  return (
+    <View style={styles.empty}>
+      <View
+        style={[
+          styles.emptyIcon,
+          { backgroundColor: colors.cardElevated, borderRadius: 999 },
+        ]}
+      >
+        <Feather name={icon} size={28} color={colors.primary} />
+      </View>
+      <Text style={[styles.emptyTitle, { color: colors.foreground }]}>
+        {title}
+      </Text>
+      <Text style={[styles.emptySub, { color: colors.mutedForeground }]}>
+        {subtitle}
+      </Text>
+    </View>
+  );
+}
+
+function ErrorState({ message }: { message: string }) {
+  const colors = useColors();
+  return (
+    <View style={styles.empty}>
+      <View
+        style={[
+          styles.emptyIcon,
+          { backgroundColor: colors.cardElevated, borderRadius: 999 },
+        ]}
+      >
+        <Feather name="alert-triangle" size={28} color={colors.destructive} />
+      </View>
+      <Text style={[styles.emptyTitle, { color: colors.foreground }]}>
+        Couldn't search
+      </Text>
+      <Text style={[styles.emptySub, { color: colors.mutedForeground }]}>
+        {message}
+      </Text>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  root: { flex: 1 },
+  headerGradient: { paddingBottom: 16 },
+  headerInner: { paddingHorizontal: 22, gap: 6, paddingTop: 12 },
+  greeting: {
+    fontSize: 32,
+    fontFamily: "Inter_700Bold",
+    letterSpacing: -1,
+  },
+  subtitle: { fontSize: 14, fontFamily: "Inter_400Regular", marginBottom: 14 },
+  searchBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 14,
+    height: 50,
+    gap: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  searchInput: { flex: 1, fontSize: 15, fontFamily: "Inter_500Medium" },
+  loadingWrap: { paddingTop: 60, alignItems: "center" },
+  section: { paddingTop: 8, paddingBottom: 16, gap: 10 },
+  sectionHeader: {
+    fontSize: 16,
+    fontFamily: "Inter_700Bold",
+    paddingHorizontal: 22,
+    paddingTop: 8,
+    paddingBottom: 4,
+  },
+  chips: { flexDirection: "row", flexWrap: "wrap", gap: 8, paddingHorizontal: 22 },
+  chip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    maxWidth: 220,
+  },
+  chipText: { fontSize: 12, fontFamily: "Inter_500Medium" },
+  recentCard: { width: 140, padding: 10 },
+  recentArt: { width: 120, height: 120, alignItems: "center", justifyContent: "center" },
+  recentTitle: { fontSize: 13, fontFamily: "Inter_600SemiBold", marginTop: 8 },
+  recentArtist: { fontSize: 11, fontFamily: "Inter_400Regular", marginTop: 2 },
+  empty: { alignItems: "center", paddingVertical: 60, paddingHorizontal: 30, gap: 12 },
+  emptyIcon: {
+    width: 72,
+    height: 72,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 4,
+  },
+  emptyTitle: { fontSize: 18, fontFamily: "Inter_700Bold" },
+  emptySub: { fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center" },
+});

@@ -1,0 +1,251 @@
+// ============================
+// RATE LIMIT MEMORY
+// ============================
+const rateLimitMap = new Map()
+function checkRateLimit(ip) {
+  const now = Date.now()
+  if (!rateLimitMap.has(ip)) {
+    rateLimitMap.set(ip, { count: 1, time: now })
+    return true
+  }
+  const data = rateLimitMap.get(ip)
+  if (now - data.time > 60000) {
+    rateLimitMap.set(ip, { count: 1, time: now })
+    return true
+  }
+  if (data.count >= 10) return false
+  data.count++
+  return true
+}
+// ============================
+// CORS
+// ============================
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, x-api-key"
+}
+export default {
+  async fetch(req) {
+    const url = new URL(req.url)
+    const SUPABASE_URL = "https://bgwkwlrkvbspycqsdeif.supabase.co"
+    const SERVICE_KEY = "xxxxxxxxxxxxxx"
+    // ============================
+    // CORS PRE-FLIGHT
+    // ============================
+    if (req.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: corsHeaders })
+    }
+    // ============================
+    // RATE LIMIT REGISTER
+    // ============================
+    const ip = req.headers.get("CF-Connecting-IP") || "unknown"
+    if (url.pathname === "/register") {
+      if (!checkRateLimit(ip)) {
+        return json(
+          { error: "Terlalu banyak request, coba lagi 1 jam lagi" },
+          429
+        )
+      }
+    }
+    // ============================
+    // REGISTER
+    // ============================
+    if (url.pathname === "/register" && req.method === "POST") {
+      const body = await req.json()
+      if (!body.email || !body.password) {
+        return json({ error: "Email & password wajib" }, 400)
+      }
+      const res = await fetch(`${SUPABASE_URL}/auth/v1/signup`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: SERVICE_KEY
+        },
+        body: JSON.stringify(body)
+      })
+      const data = await res.json()
+      if (!data.user) return json({ error: "Gagal register" }, 500)
+      const userId = data.user.id
+      const apiKey = generateApiKey()
+      await fetch(`${SUPABASE_URL}/rest/v1/mc_profiles`, {
+        method: "POST",
+        headers: {
+          apikey: SERVICE_KEY,
+          Authorization: `Bearer ${SERVICE_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          id: userId,
+          api_key: apiKey,
+          is_premium: false
+        })
+      })
+      return json({
+        message: "Register berhasil",
+        api_key: apiKey
+      })
+    }
+    // ============================
+    // AUTH API KEY
+    // ============================
+    const apiKey = req.headers.get("x-api-key")
+    if (!apiKey) return json({ error: "No API key" }, 401)
+    const userRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/mc_profiles?api_key=eq.${apiKey}`,
+      {
+        headers: {
+          apikey: SERVICE_KEY,
+          Authorization: `Bearer ${SERVICE_KEY}`
+        }
+      }
+    )
+    const profile = (await userRes.json())[0]
+    if (!profile) return json({ error: "Invalid API key" }, 401)
+    const userId = profile.id
+    // ============================
+    // /me
+    // ============================
+    if (url.pathname === "/me") {
+      return json(profile)
+    }
+    // ============================
+    // /usage
+    // ============================
+    if (url.pathname === "/usage") {
+      const today = new Date().toISOString().slice(0, 10)
+      const res = await fetch(
+        `${SUPABASE_URL}/rest/v1/mc_usage?user_id=eq.${userId}&date=eq.${today}`,
+        {
+          headers: {
+            apikey: SERVICE_KEY,
+            Authorization: `Bearer ${SERVICE_KEY}`
+          }
+        }
+      )
+      const usage = (await res.json())[0]
+      return json({
+        today: usage?.play_count || 0,
+        limit: 15
+      })
+    }
+    // ============================
+    // /search
+    // ============================
+    if (url.pathname === "/search" && req.method === "GET") {
+      const q = url.searchParams.get("q")
+      if (!q) return json({ error: "query kosong" }, 400)
+      const res = await fetch(
+        `https://spotify.elfar.my.id/api/spotify?q=${encodeURIComponent(q)}`
+      )
+      const data = await res.json()
+      return json(data)
+    }
+    // ============================
+    // /download
+    // ============================
+    if (url.pathname === "/download" && req.method === "POST") {
+      const { url: songUrl } = await req.json()
+      if (!songUrl) return json({ error: "URL kosong" }, 400)
+      const today = new Date().toISOString().slice(0, 10)
+      if (!profile.is_premium) {
+        const usageRes = await fetch(
+          `${SUPABASE_URL}/rest/v1/mc_usage?user_id=eq.${userId}&date=eq.${today}`,
+          {
+            headers: {
+              apikey: SERVICE_KEY,
+              Authorization: `Bearer ${SERVICE_KEY}`
+            }
+          }
+        )
+        let usage = (await usageRes.json())[0]
+        if (!usage) {
+          await fetch(`${SUPABASE_URL}/rest/v1/mc_usage`, {
+            method: "POST",
+            headers: {
+              apikey: SERVICE_KEY,
+              Authorization: `Bearer ${SERVICE_KEY}`,
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              user_id: userId,
+              date: today,
+              play_count: 1
+            })
+          })
+        } else {
+          if (usage.play_count >= 15) {
+            return json({ error: "Limit harian habis" }, 403)
+          }
+          await fetch(
+            `${SUPABASE_URL}/rest/v1/mc_usage?id=eq.${usage.id}`,
+            {
+              method: "PATCH",
+              headers: {
+                apikey: SERVICE_KEY,
+                Authorization: `Bearer ${SERVICE_KEY}`,
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({
+                play_count: usage.play_count + 1
+              })
+            }
+          )
+        }
+      }
+      const res = await fetch(
+        `https://spotify.elfar.my.id/api/spotify?link=${encodeURIComponent(songUrl)}`
+      )
+      const data = await res.json()
+      return json({
+        title: data.data?.title,
+        artist: data.data?.artist,
+        thumbnail: data.data?.thumbnail,
+        download: data.download
+      })
+    }
+    // ============================
+    // /regenerate-key
+    // ============================
+    if (url.pathname === "/regenerate-key" && req.method === "POST") {
+      const newKey = generateApiKey()
+      await fetch(`${SUPABASE_URL}/rest/v1/mc_profiles?id=eq.${userId}`, {
+        method: "PATCH",
+        headers: {
+          apikey: SERVICE_KEY,
+          Authorization: `Bearer ${SERVICE_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ api_key: newKey })
+      })
+      return json({ api_key: newKey })
+    }
+    return json({ error: "Not found" }, 404)
+  }
+}
+// ============================
+// API KEY GENERATOR
+// ============================
+function generateApiKey() {
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+  function part(len) {
+    let s = ""
+    for (let i = 0; i < len; i++) {
+      s += chars[Math.floor(Math.random() * chars.length)]
+    }
+    return s
+  }
+  return `${part(4)}-${part(4)}-${part(4)}-${part(4)}`
+}
+// ============================
+// HELPER
+// ============================
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+      ...corsHeaders
+    }
+  })
+}
