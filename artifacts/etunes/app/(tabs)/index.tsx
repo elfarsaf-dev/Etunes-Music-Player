@@ -1,5 +1,5 @@
 import { Feather } from "@expo/vector-icons";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
@@ -8,7 +8,6 @@ import {
   ActivityIndicator,
   FlatList,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -24,9 +23,25 @@ import { usePlayer } from "@/contexts/PlayerContext";
 import { useColors, useRadius } from "@/hooks/useColors";
 import { usePlayResolved } from "@/hooks/usePlayResolved";
 import { api } from "@/lib/api";
+import {
+  FEATURED_ARTISTS,
+  orderArtistsByRegion,
+  type FeaturedArtist,
+} from "@/lib/featuredArtists";
+import { detectRegion } from "@/lib/region";
 import { storage } from "@/lib/storage";
+import type { ArtistRegion } from "@/lib/featuredArtists";
 import type { SearchResultRaw, Track } from "@/lib/types";
 import { parseDurationStr, splitTitle } from "@/lib/utils";
+
+const ARTIST_PHOTO_CACHE_KEY = "@etunes/artist_photos";
+
+const HOME_QUERIES = [
+  "top 2026",
+  "tiktok viral 2026",
+  "jb",
+  "billie eilish",
+] as const;
 
 function toTrack(r: SearchResultRaw): Track {
   const { artist, title } = r.artist
@@ -44,6 +59,33 @@ function toTrack(r: SearchResultRaw): Track {
   };
 }
 
+/**
+ * Round-robin interleave several arrays so the home feed feels organic
+ * instead of "all of query A, then all of query B".
+ */
+function interleave<T>(...arrays: T[][]): T[] {
+  const out: T[] = [];
+  const max = Math.max(...arrays.map((a) => a.length), 0);
+  for (let i = 0; i < max; i++) {
+    for (const arr of arrays) {
+      if (i < arr.length) out.push(arr[i]);
+    }
+  }
+  return out;
+}
+
+function dedupeTracks(tracks: Track[]): Track[] {
+  const seen = new Set<string>();
+  const out: Track[] = [];
+  for (const t of tracks) {
+    const key = `${t.title.toLowerCase()}|${t.artist.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(t);
+  }
+  return out;
+}
+
 export default function HomeScreen() {
   const colors = useColors();
   const radius = useRadius();
@@ -59,6 +101,7 @@ export default function HomeScreen() {
   const [recents, setRecents] = useState<Track[]>([]);
   const [history, setHistory] = useState<string[]>([]);
   const [pickerTrack, setPickerTrack] = useState<Track | null>(null);
+  const [region, setRegion] = useState<ArtistRegion | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -69,6 +112,10 @@ export default function HomeScreen() {
     })();
   }, [current]);
 
+  useEffect(() => {
+    detectRegion().then(setRegion);
+  }, []);
+
   const search = useQuery({
     queryKey: ["search", submitted, apiKey],
     enabled: !!submitted && !!apiKey,
@@ -78,21 +125,39 @@ export default function HomeScreen() {
     },
   });
 
-  const newReleases = useQuery({
-    queryKey: ["section", "terbaru-2026", apiKey],
-    enabled: !!apiKey,
-    staleTime: 1000 * 60 * 30,
-    queryFn: async () =>
-      apiKey ? api.search(apiKey, "terbaru 2026") : [],
+  const homeFeeds = useQueries({
+    queries: HOME_QUERIES.map((q) => ({
+      queryKey: ["home", q, apiKey],
+      enabled: !!apiKey,
+      staleTime: 1000 * 60 * 30,
+      queryFn: async () => (apiKey ? api.search(apiKey, q) : []),
+    })),
   });
 
-  const popular = useQuery({
-    queryKey: ["section", "paling-populer", apiKey],
-    enabled: !!apiKey,
-    staleTime: 1000 * 60 * 30,
-    queryFn: async () =>
-      apiKey ? api.search(apiKey, "paling populer") : [],
-  });
+  const homeLoading = homeFeeds.some((q) => q.isLoading);
+
+  const mixedTracks = useMemo<Track[]>(() => {
+    const arrays = homeFeeds.map((q) =>
+      (q.data ?? []).slice(0, 12).map(toTrack),
+    );
+    return dedupeTracks(interleave<Track>(...arrays)).slice(0, 36);
+  }, [homeFeeds]);
+
+  // Quick "fresh" carousel from the first query (top 2026)
+  const topTracks = useMemo<Track[]>(
+    () => (homeFeeds[0]?.data ?? []).slice(0, 12).map(toTrack),
+    [homeFeeds],
+  );
+  // Viral carousel from the tiktok viral query
+  const viralTracks = useMemo<Track[]>(
+    () => (homeFeeds[1]?.data ?? []).slice(0, 12).map(toTrack),
+    [homeFeeds],
+  );
+
+  const orderedArtists = useMemo<FeaturedArtist[]>(
+    () => orderArtistsByRegion(FEATURED_ARTISTS, region),
+    [region],
+  );
 
   const handleSubmit = async () => {
     const q = query.trim();
@@ -104,14 +169,6 @@ export default function HomeScreen() {
   };
 
   const results = useMemo(() => (search.data ?? []).map(toTrack), [search.data]);
-  const newReleaseTracks = useMemo(
-    () => (newReleases.data ?? []).slice(0, 12).map(toTrack),
-    [newReleases.data],
-  );
-  const popularTracks = useMemo(
-    () => (popular.data ?? []).slice(0, 12).map(toTrack),
-    [popular.data],
-  );
 
   const handlePlayResult = (idx: number) => {
     playQueue(results, idx);
@@ -135,7 +192,9 @@ export default function HomeScreen() {
             Discover
           </Text>
           <Text style={[styles.subtitle, { color: colors.mutedForeground }]}>
-            Search for any song, anywhere
+            {region === "Indonesia"
+              ? "Dengarkan yang lagi hits di Indonesia"
+              : "Search for any song, anywhere"}
           </Text>
 
           <View
@@ -152,7 +211,7 @@ export default function HomeScreen() {
             <TextInput
               value={query}
               onChangeText={setQuery}
-              placeholder="Songs, artists, albums..."
+              placeholder="Cari lagu, artis, album..."
               placeholderTextColor={colors.mutedForeground}
               style={[styles.searchInput, { color: colors.foreground }]}
               returnKeyType="search"
@@ -174,8 +233,8 @@ export default function HomeScreen() {
       </LinearGradient>
 
       <FlatList
-        data={submitted ? results : []}
-        keyExtractor={(t) => t.id}
+        data={submitted ? results : mixedTracks}
+        keyExtractor={(t, idx) => `${t.id}-${idx}`}
         contentContainerStyle={{ paddingBottom: 180 }}
         ListHeaderComponent={
           submitted ? (
@@ -188,26 +247,30 @@ export default function HomeScreen() {
                 message={
                   search.error instanceof Error
                     ? search.error.message
-                    : "Search failed"
+                    : "Pencarian gagal"
                 }
               />
             ) : results.length === 0 ? (
               <EmptyState
                 icon="search"
-                title="No results"
-                subtitle={`Nothing for "${submitted}"`}
+                title="Tidak ada hasil"
+                subtitle={`Tidak ditemukan "${submitted}"`}
               />
             ) : (
-              <SectionHeader title={`Results for "${submitted}"`} />
+              <SectionHeader title={`Hasil "${submitted}"`} />
             )
           ) : (
             <BrowseHome
               recents={recents}
               history={history}
-              newReleases={newReleaseTracks}
-              popular={popularTracks}
-              loadingNew={newReleases.isFetching}
-              loadingPopular={popular.isFetching}
+              topTracks={topTracks}
+              viralTracks={viralTracks}
+              loadingTop={homeFeeds[0]?.isFetching ?? false}
+              loadingViral={homeFeeds[1]?.isFetching ?? false}
+              loadingArtists={homeLoading}
+              region={region}
+              orderedArtists={orderedArtists}
+              apiKey={apiKey}
               onSearch={(q) => {
                 setQuery(q);
                 setSubmitted(q);
@@ -223,7 +286,11 @@ export default function HomeScreen() {
         renderItem={({ item, index }) => (
           <SongRow
             track={item}
-            onPress={() => handlePlayResult(index)}
+            onPress={() =>
+              submitted
+                ? handlePlayResult(index)
+                : handlePlaySection(mixedTracks, index)
+            }
             onMore={() => setPickerTrack(item)}
             rightSlot={
               <Pressable
@@ -244,6 +311,13 @@ export default function HomeScreen() {
             }
           />
         )}
+        ListFooterComponent={
+          !submitted && mixedTracks.length === 0 && homeLoading ? (
+            <View style={{ paddingVertical: 40, alignItems: "center" }}>
+              <ActivityIndicator color={colors.primary} />
+            </View>
+          ) : null
+        }
       />
 
       <AddToPlaylistSheet
@@ -258,10 +332,14 @@ export default function HomeScreen() {
 function BrowseHome({
   recents,
   history,
-  newReleases,
-  popular,
-  loadingNew,
-  loadingPopular,
+  topTracks,
+  viralTracks,
+  loadingTop,
+  loadingViral,
+  loadingArtists,
+  region,
+  orderedArtists,
+  apiKey,
   onSearch,
   onPlayRecent,
   onPlaySection,
@@ -269,10 +347,14 @@ function BrowseHome({
 }: {
   recents: Track[];
   history: string[];
-  newReleases: Track[];
-  popular: Track[];
-  loadingNew: boolean;
-  loadingPopular: boolean;
+  topTracks: Track[];
+  viralTracks: Track[];
+  loadingTop: boolean;
+  loadingViral: boolean;
+  loadingArtists: boolean;
+  region: ArtistRegion | null;
+  orderedArtists: FeaturedArtist[];
+  apiKey: string | null;
   onSearch: (q: string) => void;
   onPlayRecent: (track: Track, index: number) => void;
   onPlaySection: (tracks: Track[], index: number) => void;
@@ -281,25 +363,11 @@ function BrowseHome({
   const colors = useColors();
   const radius = useRadius();
 
-  const featuredArtists = useMemo(() => {
-    const seen = new Set<string>();
-    const list: { name: string; thumbnail?: string }[] = [];
-    for (const t of [...popular, ...newReleases]) {
-      if (!t.artist || t.artist === "Local file") continue;
-      const key = t.artist.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      list.push({ name: t.artist, thumbnail: t.thumbnail });
-      if (list.length >= 10) break;
-    }
-    return list;
-  }, [popular, newReleases]);
-
   return (
     <View style={{ paddingTop: 8 }}>
       {history.length > 0 ? (
         <View style={styles.section}>
-          <SectionHeader title="Recent searches" />
+          <SectionHeader title="Pencarian terakhir" />
           <View style={styles.chips}>
             {history.map((h) => (
               <Pressable
@@ -328,72 +396,37 @@ function BrowseHome({
         </View>
       ) : null}
 
-      <CardCarousel
-        title="New releases · 2026"
-        subtitle="Lagu terbaru tahun ini"
-        loading={loadingNew}
-        tracks={newReleases}
-        onPlay={(idx) => onPlaySection(newReleases, idx)}
+      <ArtistsRow
+        artists={orderedArtists}
+        loading={loadingArtists}
+        region={region}
+        apiKey={apiKey}
+        onOpenArtist={onOpenArtist}
       />
 
-      {featuredArtists.length > 0 ? (
-        <View style={styles.section}>
-          <SectionHeader title="Top artists" />
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ paddingHorizontal: 16, gap: 14 }}
-          >
-            {featuredArtists.map((a) => (
-              <Pressable
-                key={a.name}
-                onPress={() => onOpenArtist(a.name)}
-                style={({ pressed }) => [
-                  styles.artistCard,
-                  { opacity: pressed ? 0.75 : 1 },
-                ]}
-              >
-                {a.thumbnail ? (
-                  <Image
-                    source={{ uri: a.thumbnail }}
-                    style={styles.artistAvatar}
-                    contentFit="cover"
-                  />
-                ) : (
-                  <LinearGradient
-                    colors={[colors.gradientStart, colors.gradientEnd]}
-                    style={styles.artistAvatar}
-                  >
-                    <Feather name="user" size={28} color="#fff" />
-                  </LinearGradient>
-                )}
-                <Text
-                  style={[styles.artistName, { color: colors.foreground }]}
-                  numberOfLines={1}
-                >
-                  {a.name}
-                </Text>
-              </Pressable>
-            ))}
-          </ScrollView>
-        </View>
-      ) : null}
+      <CardCarousel
+        title="Top 2026"
+        subtitle="Yang lagi paling didengerin"
+        loading={loadingTop}
+        tracks={topTracks}
+        onPlay={(idx) => onPlaySection(topTracks, idx)}
+      />
 
       <CardCarousel
-        title="Most popular"
-        subtitle="Yang lagi viral"
-        loading={loadingPopular}
-        tracks={popular}
-        onPlay={(idx) => onPlaySection(popular, idx)}
+        title="TikTok Viral"
+        subtitle="Lagu viral 2026"
+        loading={loadingViral}
+        tracks={viralTracks}
+        onPlay={(idx) => onPlaySection(viralTracks, idx)}
       />
 
       {recents.length > 0 ? (
         <View style={styles.section}>
-          <SectionHeader title="Recently played" />
+          <SectionHeader title="Baru diputar" />
           <FlatList
             data={recents.slice(0, 10)}
             horizontal
-            keyExtractor={(t) => t.id}
+            keyExtractor={(t, idx) => `${t.id}-${idx}`}
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}
             renderItem={({ item, index }) => (
@@ -443,20 +476,132 @@ function BrowseHome({
         </View>
       ) : null}
 
-      {history.length === 0 &&
-      recents.length === 0 &&
-      newReleases.length === 0 &&
-      popular.length === 0 &&
-      !loadingNew &&
-      !loadingPopular ? (
-        <View style={{ paddingTop: 60 }}>
-          <EmptyState
-            icon="music"
-            title="Start exploring"
-            subtitle="Search for your favorite track to get started"
-          />
-        </View>
-      ) : null}
+      <SectionHeader title="Pilihan untukmu" subtitle="Campuran lagu hits" />
+    </View>
+  );
+}
+
+/**
+ * Renders the curated artist list as a swipeable horizontal FlatList.
+ * Each artist's photo is fetched once via the search API and persisted
+ * in AsyncStorage so it stays static across launches.
+ */
+function ArtistsRow({
+  artists,
+  loading,
+  region,
+  apiKey,
+  onOpenArtist,
+}: {
+  artists: FeaturedArtist[];
+  loading: boolean;
+  region: ArtistRegion | null;
+  apiKey: string | null;
+  onOpenArtist: (name: string) => void;
+}) {
+  const colors = useColors();
+  const [photos, setPhotos] = useState<Record<string, string>>({});
+
+  // Load cached photos
+  useEffect(() => {
+    storage
+      .get<Record<string, string>>(ARTIST_PHOTO_CACHE_KEY)
+      .then((cached) => {
+        if (cached) setPhotos(cached);
+      });
+  }, []);
+
+  // Lazily fetch missing photos one artist at a time
+  useEffect(() => {
+    if (!apiKey) return;
+    const missing = artists.find((a) => !photos[a.name]);
+    if (!missing) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.search(apiKey, missing.name);
+        const pic = res.find((r) => r.thumbnail)?.thumbnail;
+        if (!pic || cancelled) return;
+        setPhotos((prev) => {
+          if (prev[missing.name]) return prev;
+          const next = { ...prev, [missing.name]: pic };
+          storage.set(ARTIST_PHOTO_CACHE_KEY, next);
+          return next;
+        });
+      } catch {
+        // ignore failures — placeholder will keep showing
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [artists, photos, apiKey]);
+
+  if (artists.length === 0) return null;
+
+  return (
+    <View style={styles.section}>
+      <SectionHeader
+        title={
+          region === "Indonesia" ? "Artis populer Indonesia" : "Top artists"
+        }
+        subtitle={
+          region === "Indonesia"
+            ? "Geser untuk lihat lebih banyak"
+            : "Swipe to explore"
+        }
+      />
+      <FlatList
+        data={artists}
+        horizontal
+        keyExtractor={(a) => a.name}
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ paddingHorizontal: 16, gap: 14 }}
+        renderItem={({ item }) => {
+          const photo = photos[item.name];
+          return (
+            <Pressable
+              onPress={() => onOpenArtist(item.name)}
+              style={({ pressed }) => [
+                styles.artistCard,
+                { opacity: pressed ? 0.75 : 1 },
+              ]}
+            >
+              {photo ? (
+                <Image
+                  source={{ uri: photo }}
+                  style={styles.artistAvatar}
+                  contentFit="cover"
+                />
+              ) : (
+                <LinearGradient
+                  colors={[colors.gradientStart, colors.gradientEnd]}
+                  style={styles.artistAvatar}
+                >
+                  {loading ? (
+                    <ActivityIndicator color="#fff" size="small" />
+                  ) : (
+                    <Feather name="user" size={28} color="#fff" />
+                  )}
+                </LinearGradient>
+              )}
+              <Text
+                style={[styles.artistName, { color: colors.foreground }]}
+                numberOfLines={1}
+              >
+                {item.name}
+              </Text>
+              <Text
+                style={[styles.artistRegion, { color: colors.mutedForeground }]}
+                numberOfLines={1}
+              >
+                {item.region === "Indonesia" ? "🇮🇩 Indonesia" : "🌍 International"}
+              </Text>
+            </Pressable>
+          );
+        }}
+      />
     </View>
   );
 }
@@ -493,7 +638,7 @@ function CardCarousel({
       <FlatList
         data={tracks}
         horizontal
-        keyExtractor={(t) => t.id}
+        keyExtractor={(t, idx) => `${t.id}-${idx}`}
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}
         renderItem={({ item, index }) => (
@@ -608,7 +753,7 @@ function ErrorState({ message }: { message: string }) {
         <Feather name="alert-triangle" size={28} color={colors.destructive} />
       </View>
       <Text style={[styles.emptyTitle, { color: colors.foreground }]}>
-        Couldn&apos;t search
+        Pencarian gagal
       </Text>
       <Text style={[styles.emptySub, { color: colors.mutedForeground }]}>
         {message}
@@ -689,11 +834,18 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
+    overflow: "hidden",
   },
   artistName: {
     fontSize: 12,
     fontFamily: "Inter_600SemiBold",
     marginTop: 8,
+    textAlign: "center",
+  },
+  artistRegion: {
+    fontSize: 10,
+    fontFamily: "Inter_400Regular",
+    marginTop: 2,
     textAlign: "center",
   },
   empty: {

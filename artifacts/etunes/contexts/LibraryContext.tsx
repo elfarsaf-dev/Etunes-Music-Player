@@ -22,8 +22,10 @@ type LibraryContextValue = {
   localTracks: Track[];
   scanning: boolean;
   permission: MediaLibrary.PermissionStatus | null;
+  requestMediaPermission: () => Promise<MediaLibrary.PermissionStatus>;
   scanLocal: () => Promise<void>;
   pickFiles: () => Promise<Track[]>;
+  removeLocalTrack: (trackId: string) => Promise<void>;
 
   playlists: Playlist[];
   favoritesPlaylistId: string;
@@ -48,6 +50,7 @@ type LibraryContextValue = {
 const LibraryContext = createContext<LibraryContextValue | null>(null);
 
 const FAVORITES_ID = "favorites";
+const REMOVED_LOCAL_KEY = "@etunes/removed_local";
 
 function makeFavoritesPlaylist(): Playlist {
   return {
@@ -78,6 +81,9 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
   const [scanning, setScanning] = useState(false);
   const [permission, setPermission] =
     useState<MediaLibrary.PermissionStatus | null>(null);
+  const [removedLocalIds, setRemovedLocalIds] = useState<Set<string>>(
+    new Set(),
+  );
 
   const [playlists, setPlaylists] = useState<Playlist[]>([
     makeFavoritesPlaylist(),
@@ -92,7 +98,7 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
     Record<string, DownloadStatus>
   >({});
 
-  // Load playlists + downloads from storage
+  // Load playlists, downloads, and removed list from storage
   useEffect(() => {
     (async () => {
       const saved = await storage.get<Playlist[]>(storage.keys.playlists);
@@ -110,6 +116,9 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
           `${storage.keys.downloads}/meta`,
         )) ?? {};
       setDownloadedMeta(meta);
+      const removed =
+        (await storage.get<string[]>(REMOVED_LOCAL_KEY)) ?? [];
+      setRemovedLocalIds(new Set(removed));
     })();
   }, []);
 
@@ -134,6 +143,22 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
     [],
   );
 
+  const persistRemovedLocal = useCallback(async (next: Set<string>) => {
+    setRemovedLocalIds(next);
+    await storage.set(REMOVED_LOCAL_KEY, Array.from(next));
+  }, []);
+
+  const requestMediaPermission =
+    useCallback(async (): Promise<MediaLibrary.PermissionStatus> => {
+      if (Platform.OS === "web") {
+        setPermission(MediaLibrary.PermissionStatus.UNDETERMINED);
+        return MediaLibrary.PermissionStatus.UNDETERMINED;
+      }
+      const perm = await MediaLibrary.requestPermissionsAsync();
+      setPermission(perm.status);
+      return perm.status;
+    }, []);
+
   const scanLocal = useCallback(async () => {
     if (Platform.OS === "web") {
       setLocalTracks([]);
@@ -157,8 +182,10 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
           sortBy: [MediaLibrary.SortBy.creationTime],
         });
         for (const a of page.assets) {
+          const id = `local:${a.id}`;
+          if (removedLocalIds.has(id)) continue;
           all.push({
-            id: `local:${a.id}`,
+            id,
             title: a.filename.replace(/\.[^/.]+$/, ""),
             artist: "Local file",
             duration: a.duration,
@@ -173,7 +200,7 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setScanning(false);
     }
-  }, []);
+  }, [removedLocalIds]);
 
   const pickFiles = useCallback(async (): Promise<Track[]> => {
     const result = await DocumentPicker.getDocumentAsync({
@@ -189,12 +216,35 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
       source: "local",
       uri: a.uri,
     }));
+    // Un-hide if previously removed
+    if (removedLocalIds.size > 0) {
+      const next = new Set(removedLocalIds);
+      let changed = false;
+      for (const t of newTracks) {
+        if (next.delete(t.id)) changed = true;
+      }
+      if (changed) await persistRemovedLocal(next);
+    }
     setLocalTracks((prev) => {
       const ids = new Set(prev.map((t) => t.id));
       return [...newTracks.filter((t) => !ids.has(t.id)), ...prev];
     });
     return newTracks;
-  }, []);
+  }, [removedLocalIds, persistRemovedLocal]);
+
+  const removeLocalTrack = useCallback(
+    async (trackId: string) => {
+      // Hide from the in-memory list. We don't actually delete the file from
+      // the user's device — that requires destructive permissions and is
+      // surprising behavior. Instead persist a "hidden" set so re-scans
+      // ignore it.
+      setLocalTracks((prev) => prev.filter((t) => t.id !== trackId));
+      const next = new Set(removedLocalIds);
+      next.add(trackId);
+      await persistRemovedLocal(next);
+    },
+    [removedLocalIds, persistRemovedLocal],
+  );
 
   const isFavorite = useCallback(
     (trackId: string) => {
@@ -291,18 +341,27 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
   const downloadTrack = useCallback(
     async (track: Track, apiKey: string | null) => {
       if (Platform.OS === "web") {
-        throw new Error("Downloads are only available on mobile");
+        throw new Error("Download cuma bisa di aplikasi mobile.");
       }
       if (track.source === "local") return;
       if (downloads[track.id]) return;
-      if (!track.spotifyUrl) throw new Error("Track has no source URL");
-      if (!apiKey) throw new Error("Sign in to download");
+      if (!track.spotifyUrl) {
+        throw new Error("Lagu ini tidak punya sumber yang bisa diunduh.");
+      }
+      if (!apiKey) {
+        throw new Error("Masuk dulu untuk download lagu.");
+      }
 
       setDownloadStatus((prev) => ({ ...prev, [track.id]: "downloading" }));
       try {
+        // Resolve playable stream URL
         const resolved = await api.resolveStream(apiKey, track.spotifyUrl);
+
+        // Save into app-private downloads directory
         const dir = getDownloadsDir();
-        if (!dir) throw new Error("Cannot access storage");
+        if (!dir) {
+          throw new Error("Tidak bisa akses penyimpanan internal aplikasi.");
+        }
 
         const ext = (() => {
           const u = resolved.streamUrl.split("?")[0];
@@ -317,6 +376,36 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
           resolved.streamUrl,
           destination,
         );
+
+        // Try to also save to the device's Music library so it shows up in
+        // the system music app. Fail silently if permission isn't granted —
+        // playback from the app-private copy still works.
+        try {
+          let perm = await MediaLibrary.getPermissionsAsync();
+          if (perm.status !== "granted" && perm.canAskAgain) {
+            perm = await MediaLibrary.requestPermissionsAsync();
+            setPermission(perm.status);
+          }
+          if (perm.status === "granted") {
+            const asset = await MediaLibrary.createAssetAsync(downloaded.uri);
+            try {
+              const album = await MediaLibrary.getAlbumAsync("etunes");
+              if (album) {
+                await MediaLibrary.addAssetsToAlbumAsync(
+                  [asset],
+                  album,
+                  false,
+                );
+              } else {
+                await MediaLibrary.createAlbumAsync("etunes", asset, false);
+              }
+            } catch {
+              // Album operations are best-effort
+            }
+          }
+        } catch {
+          // Best-effort — never block the download record
+        }
 
         const record: DownloadRecord = {
           trackId: track.id,
@@ -397,8 +486,10 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
       localTracks,
       scanning,
       permission,
+      requestMediaPermission,
       scanLocal,
       pickFiles,
+      removeLocalTrack,
       playlists,
       favoritesPlaylistId: FAVORITES_ID,
       isFavorite,
@@ -421,8 +512,10 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
       localTracks,
       scanning,
       permission,
+      requestMediaPermission,
       scanLocal,
       pickFiles,
+      removeLocalTrack,
       playlists,
       isFavorite,
       toggleFavorite,

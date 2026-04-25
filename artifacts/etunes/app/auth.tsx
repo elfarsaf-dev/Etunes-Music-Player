@@ -1,7 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -21,6 +21,9 @@ import { ApiError } from "@/lib/api";
 
 type Mode = "register" | "key";
 
+const PASSWORD_MIN_LEN = 8;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 export default function AuthScreen() {
   const colors = useColors();
   const radius = useRadius();
@@ -31,26 +34,56 @@ export default function AuthScreen() {
   const [mode, setMode] = useState<Mode>("register");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [keyInput, setKeyInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [submitted, setSubmitted] = useState(false);
+
+  const trimmedEmail = email.trim();
+  const trimmedKey = keyInput.trim();
+
+  const emailError = useMemo(() => {
+    if (!submitted && !trimmedEmail) return null;
+    if (!trimmedEmail) return "Email wajib diisi.";
+    if (!EMAIL_RE.test(trimmedEmail)) return "Format email tidak valid.";
+    return null;
+  }, [trimmedEmail, submitted]);
+
+  const passwordError = useMemo(() => {
+    if (!submitted && !password) return null;
+    if (!password) return "Password wajib diisi.";
+    if (password.length < PASSWORD_MIN_LEN)
+      return `Password minimal ${PASSWORD_MIN_LEN} karakter.`;
+    return null;
+  }, [password, submitted]);
+
+  const keyError = useMemo(() => {
+    if (!submitted && !trimmedKey) return null;
+    if (!trimmedKey) return "API key wajib diisi.";
+    if (trimmedKey.length < 8) return "API key terlalu pendek.";
+    return null;
+  }, [trimmedKey, submitted]);
+
+  const formInvalid =
+    mode === "register" ? !!(emailError || passwordError) : !!keyError;
 
   const handleSubmit = async () => {
+    setSubmitted(true);
     setError(null);
+
+    if (mode === "register") {
+      if (emailError || passwordError) return;
+    } else if (keyError) {
+      return;
+    }
+
     setLoading(true);
     try {
       if (mode === "register") {
-        if (!email.trim() || !password.trim()) {
-          setError("Email and password required");
-          return;
-        }
-        await register(email.trim(), password);
+        await register(trimmedEmail, password);
       } else {
-        if (!keyInput.trim()) {
-          setError("API key required");
-          return;
-        }
-        await setApiKey(keyInput.trim());
+        await setApiKey(trimmedKey);
       }
       router.replace("/(tabs)");
     } catch (err) {
@@ -59,11 +92,17 @@ export default function AuthScreen() {
           ? err.message
           : err instanceof Error
             ? err.message
-            : "Something went wrong";
+            : "Terjadi kesalahan. Coba lagi.";
       setError(msg);
     } finally {
       setLoading(false);
     }
+  };
+
+  const switchMode = (next: Mode) => {
+    setMode(next);
+    setError(null);
+    setSubmitted(false);
   };
 
   return (
@@ -111,7 +150,7 @@ export default function AuthScreen() {
           >
             <View style={styles.tabs}>
               <Pressable
-                onPress={() => setMode("register")}
+                onPress={() => switchMode("register")}
                 style={[
                   styles.tab,
                   mode === "register" && {
@@ -131,11 +170,11 @@ export default function AuthScreen() {
                     },
                   ]}
                 >
-                  Create account
+                  Buat akun
                 </Text>
               </Pressable>
               <Pressable
-                onPress={() => setMode("key")}
+                onPress={() => switchMode("key")}
                 style={[
                   styles.tab,
                   mode === "key" && {
@@ -155,7 +194,7 @@ export default function AuthScreen() {
                     },
                   ]}
                 >
-                  I have a key
+                  Punya API key
                 </Text>
               </Pressable>
             </View>
@@ -164,52 +203,91 @@ export default function AuthScreen() {
               <View style={styles.form}>
                 <Field
                   icon="mail"
-                  placeholder="you@example.com"
+                  label="Email"
+                  placeholder="kamu@email.com"
                   value={email}
-                  onChangeText={setEmail}
+                  onChangeText={(t) => {
+                    setEmail(t);
+                    if (error) setError(null);
+                  }}
                   keyboardType="email-address"
                   autoCapitalize="none"
+                  errorText={emailError}
                 />
                 <Field
                   icon="lock"
-                  placeholder="Password"
+                  label="Password"
+                  placeholder="Minimal 8 karakter"
                   value={password}
-                  onChangeText={setPassword}
-                  secure
+                  onChangeText={(t) => {
+                    setPassword(t);
+                    if (error) setError(null);
+                  }}
+                  secure={!showPassword}
+                  rightIcon={showPassword ? "eye-off" : "eye"}
+                  onRightIconPress={() => setShowPassword((v) => !v)}
+                  errorText={passwordError}
+                  helperText={
+                    !passwordError
+                      ? `Minimal ${PASSWORD_MIN_LEN} karakter, kombinasi huruf & angka lebih aman.`
+                      : undefined
+                  }
                 />
               </View>
             ) : (
               <View style={styles.form}>
                 <Field
                   icon="key"
+                  label="API key"
                   placeholder="xxxx-xxxx-xxxx-xxxx"
                   value={keyInput}
-                  onChangeText={setKeyInput}
+                  onChangeText={(t) => {
+                    setKeyInput(t);
+                    if (error) setError(null);
+                  }}
                   autoCapitalize="none"
                   monospace
+                  errorText={keyError}
+                  helperText={
+                    !keyError
+                      ? "Pakai API key yang kamu dapat saat daftar."
+                      : undefined
+                  }
                 />
-                <Text
-                  style={[styles.helper, { color: colors.mutedForeground }]}
-                >
-                  Use the API key you received when you registered.
-                </Text>
               </View>
             )}
 
             {error ? (
-              <Text style={[styles.error, { color: colors.destructive }]}>
-                {error}
-              </Text>
+              <View
+                style={[
+                  styles.errorBox,
+                  {
+                    backgroundColor: colors.destructive + "20",
+                    borderColor: colors.destructive + "55",
+                    borderRadius: radius,
+                  },
+                ]}
+              >
+                <Feather
+                  name="alert-circle"
+                  size={16}
+                  color={colors.destructive}
+                />
+                <Text style={[styles.errorText, { color: colors.destructive }]}>
+                  {error}
+                </Text>
+              </View>
             ) : null}
 
             <Pressable
               onPress={handleSubmit}
-              disabled={loading}
+              disabled={loading || (submitted && formInvalid)}
               style={({ pressed }) => [
                 styles.submit,
                 {
                   borderRadius: radius,
-                  opacity: pressed || loading ? 0.85 : 1,
+                  opacity:
+                    pressed || loading || (submitted && formInvalid) ? 0.7 : 1,
                 },
               ]}
             >
@@ -223,13 +301,13 @@ export default function AuthScreen() {
                 <ActivityIndicator color="#fff" />
               ) : (
                 <Text style={styles.submitText}>
-                  {mode === "register" ? "Create account" : "Continue"}
+                  {mode === "register" ? "Buat akun" : "Masuk"}
                 </Text>
               )}
             </Pressable>
 
             <Text style={[styles.fineprint, { color: colors.mutedForeground }]}>
-              Free accounts include 15 streams per day.
+              Akun gratis dapat 15 stream per hari.
             </Text>
           </View>
         </ScrollView>
@@ -240,6 +318,7 @@ export default function AuthScreen() {
 
 function Field({
   icon,
+  label,
   placeholder,
   value,
   onChangeText,
@@ -247,8 +326,13 @@ function Field({
   keyboardType,
   autoCapitalize,
   monospace,
+  errorText,
+  helperText,
+  rightIcon,
+  onRightIconPress,
 }: {
   icon: keyof typeof Feather.glyphMap;
+  label: string;
   placeholder: string;
   value: string;
   onChangeText: (s: string) => void;
@@ -256,35 +340,68 @@ function Field({
   keyboardType?: "default" | "email-address";
   autoCapitalize?: "none" | "sentences";
   monospace?: boolean;
+  errorText?: string | null;
+  helperText?: string;
+  rightIcon?: keyof typeof Feather.glyphMap;
+  onRightIconPress?: () => void;
 }) {
   const colors = useColors();
   const radius = useRadius();
+  const hasError = !!errorText;
   return (
-    <View
-      style={[
-        styles.field,
-        { backgroundColor: colors.muted, borderRadius: radius },
-      ]}
-    >
-      <Feather name={icon} size={18} color={colors.mutedForeground} />
-      <TextInput
-        value={value}
-        onChangeText={onChangeText}
-        placeholder={placeholder}
-        placeholderTextColor={colors.mutedForeground}
-        secureTextEntry={secure}
-        keyboardType={keyboardType}
-        autoCapitalize={autoCapitalize}
+    <View style={{ gap: 6 }}>
+      <Text style={[styles.fieldLabel, { color: colors.mutedForeground }]}>
+        {label}
+      </Text>
+      <View
         style={[
-          styles.input,
+          styles.field,
           {
-            color: colors.foreground,
-            fontFamily: monospace
-              ? Platform.select({ ios: "Menlo", android: "monospace" })
-              : "Inter_500Medium",
+            backgroundColor: colors.muted,
+            borderRadius: radius,
+            borderColor: hasError ? colors.destructive : "transparent",
+            borderWidth: hasError ? 1 : 0,
           },
         ]}
-      />
+      >
+        <Feather
+          name={icon}
+          size={18}
+          color={hasError ? colors.destructive : colors.mutedForeground}
+        />
+        <TextInput
+          value={value}
+          onChangeText={onChangeText}
+          placeholder={placeholder}
+          placeholderTextColor={colors.mutedForeground}
+          secureTextEntry={secure}
+          keyboardType={keyboardType}
+          autoCapitalize={autoCapitalize}
+          style={[
+            styles.input,
+            {
+              color: colors.foreground,
+              fontFamily: monospace
+                ? Platform.select({ ios: "Menlo", android: "monospace" })
+                : "Inter_500Medium",
+            },
+          ]}
+        />
+        {rightIcon && onRightIconPress ? (
+          <Pressable onPress={onRightIconPress} hitSlop={10}>
+            <Feather name={rightIcon} size={18} color={colors.mutedForeground} />
+          </Pressable>
+        ) : null}
+      </View>
+      {errorText ? (
+        <Text style={[styles.fieldHint, { color: colors.destructive }]}>
+          {errorText}
+        </Text>
+      ) : helperText ? (
+        <Text style={[styles.fieldHint, { color: colors.mutedForeground }]}>
+          {helperText}
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -319,14 +436,25 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     gap: 14,
   },
-  tabs: { flexDirection: "row", gap: 6, padding: 4, backgroundColor: "transparent" },
+  tabs: {
+    flexDirection: "row",
+    gap: 6,
+    padding: 4,
+    backgroundColor: "transparent",
+  },
   tab: {
     flex: 1,
     alignItems: "center",
     paddingVertical: 10,
   },
   tabText: { fontFamily: "Inter_600SemiBold", fontSize: 13 },
-  form: { gap: 10 },
+  form: { gap: 12 },
+  fieldLabel: {
+    fontSize: 11,
+    fontFamily: "Inter_600SemiBold",
+    letterSpacing: 0.5,
+    textTransform: "uppercase",
+  },
   field: {
     flexDirection: "row",
     alignItems: "center",
@@ -335,7 +463,24 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   input: { flex: 1, fontSize: 15 },
-  helper: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: -2 },
+  fieldHint: {
+    fontSize: 11,
+    fontFamily: "Inter_500Medium",
+    paddingHorizontal: 4,
+  },
+  errorBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  errorText: {
+    flex: 1,
+    fontSize: 13,
+    fontFamily: "Inter_500Medium",
+  },
   submit: {
     height: 50,
     alignItems: "center",
@@ -344,7 +489,6 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   submitText: { color: "#fff", fontFamily: "Inter_700Bold", fontSize: 15 },
-  error: { fontSize: 13, fontFamily: "Inter_500Medium", textAlign: "center" },
   fineprint: {
     fontSize: 11,
     fontFamily: "Inter_400Regular",

@@ -5,19 +5,23 @@ import { useRouter } from "expo-router";
 import React, { useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Pressable,
   StyleSheet,
   Text,
   View,
 } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, {
   Easing,
+  runOnJS,
   useAnimatedStyle,
   useSharedValue,
   withRepeat,
+  withSpring,
   withTiming,
 } from "react-native-reanimated";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AddToPlaylistSheet } from "@/components/AddToPlaylistSheet";
 import { useAuth } from "@/contexts/AuthContext";
@@ -25,7 +29,8 @@ import { useLibrary } from "@/contexts/LibraryContext";
 import { usePlayer } from "@/contexts/PlayerContext";
 import { useColors, useRadius } from "@/hooks/useColors";
 import { formatTime } from "@/lib/utils";
-import { Alert } from "react-native";
+
+const SWIPE_DISMISS_THRESHOLD = 120;
 
 export default function PlayerScreen() {
   const colors = useColors();
@@ -66,27 +71,32 @@ export default function PlayerScreen() {
     if (!current) return;
     if (current.source === "local") return;
     if (downloaded) {
-      Alert.alert("Remove download?", `"${current.title}" will be deleted from this device.`, [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Remove",
-          style: "destructive",
-          onPress: () => removeDownload(current.id),
-        },
-      ]);
+      Alert.alert(
+        "Hapus download?",
+        `"${current.title}" akan dihapus dari perangkat.`,
+        [
+          { text: "Batal", style: "cancel" },
+          {
+            text: "Hapus",
+            style: "destructive",
+            onPress: () => removeDownload(current.id),
+          },
+        ],
+      );
       return;
     }
     try {
       await downloadTrack(current, apiKey);
     } catch (e) {
       Alert.alert(
-        "Download failed",
-        e instanceof Error ? e.message : "Could not download",
+        "Download gagal",
+        e instanceof Error ? e.message : "Tidak bisa mendownload lagu.",
       );
     }
   };
 
   const rotation = useSharedValue(0);
+  const translateY = useSharedValue(0);
 
   React.useEffect(() => {
     if (status === "playing") {
@@ -98,6 +108,44 @@ export default function PlayerScreen() {
       rotation.value = withTiming(rotation.value, { duration: 0 });
     }
   }, [status, rotation]);
+
+  const handleClose = React.useCallback(() => {
+    router.back();
+  }, [router]);
+
+  // Custom swipe-down gesture so it works reliably on Android.
+  const panGesture = React.useMemo(
+    () =>
+      Gesture.Pan()
+        .activeOffsetY(15)
+        .failOffsetX([-25, 25])
+        .onChange((e) => {
+          if (e.translationY > 0) {
+            translateY.value = e.translationY;
+          }
+        })
+        .onEnd((e) => {
+          if (
+            e.translationY > SWIPE_DISMISS_THRESHOLD ||
+            e.velocityY > 800
+          ) {
+            translateY.value = withTiming(600, { duration: 200 }, () => {
+              runOnJS(handleClose)();
+            });
+          } else {
+            translateY.value = withSpring(0, { damping: 20, stiffness: 220 });
+          }
+        }),
+    [handleClose, translateY],
+  );
+
+  const containerStyle = useAnimatedStyle(() => {
+    const opacity = 1 - Math.min(1, translateY.value / 400);
+    return {
+      transform: [{ translateY: translateY.value }],
+      opacity,
+    };
+  });
 
   const artStyle = useAnimatedStyle(() => ({
     transform: [{ rotate: `${rotation.value}deg` }],
@@ -111,13 +159,13 @@ export default function PlayerScreen() {
           { backgroundColor: colors.background, paddingTop: insets.top },
         ]}
       >
-        <Pressable onPress={() => router.back()} style={styles.closeBtn}>
+        <Pressable onPress={handleClose} style={styles.closeBtn}>
           <Feather name="chevron-down" size={28} color={colors.foreground} />
         </Pressable>
         <View style={styles.emptyInner}>
           <Feather name="music" size={36} color={colors.mutedForeground} />
           <Text style={[styles.emptyText, { color: colors.mutedForeground }]}>
-            Nothing playing
+            Belum ada yang diputar
           </Text>
         </View>
       </View>
@@ -131,238 +179,259 @@ export default function PlayerScreen() {
   };
 
   return (
-    <View style={[styles.root, { backgroundColor: colors.background }]}>
-      <LinearGradient
-        colors={[colors.gradientStart, colors.background]}
-        locations={[0, 0.7]}
-        style={StyleSheet.absoluteFill}
-      />
+    <GestureDetector gesture={panGesture}>
+      <Animated.View
+        style={[
+          styles.root,
+          { backgroundColor: colors.background },
+          containerStyle,
+        ]}
+      >
+        <LinearGradient
+          colors={[colors.gradientStart, colors.background]}
+          locations={[0, 0.7]}
+          style={StyleSheet.absoluteFill}
+        />
 
-      <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
-        <Pressable
-          onPress={() => router.back()}
-          hitSlop={10}
-          style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
-        >
-          <Feather name="chevron-down" size={28} color="#fff" />
-        </Pressable>
-        <View style={{ alignItems: "center", flex: 1 }}>
-          <Text style={styles.headerEyebrow}>Now playing</Text>
-          <Text style={styles.headerTitle} numberOfLines={1}>
-            {current.album ?? current.artist}
+        <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
+          <Pressable
+            onPress={handleClose}
+            hitSlop={10}
+            style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+          >
+            <Feather name="chevron-down" size={28} color="#fff" />
+          </Pressable>
+          <View style={{ alignItems: "center", flex: 1 }}>
+            <Text style={styles.headerEyebrow}>Sedang diputar</Text>
+            <Text style={styles.headerTitle} numberOfLines={1}>
+              {current.album ?? current.artist}
+            </Text>
+          </View>
+          <Pressable
+            onPress={() => setPickerOpen(true)}
+            hitSlop={10}
+            style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+          >
+            <Feather name="more-vertical" size={24} color="#fff" />
+          </Pressable>
+        </View>
+
+        {/* swipe handle */}
+        <View style={styles.swipeHint}>
+          <View style={styles.swipeBar} />
+        </View>
+
+        <View style={styles.artContainer}>
+          <Animated.View style={[styles.artWrap, artStyle]}>
+            {current.thumbnail ? (
+              <Image
+                source={{ uri: current.thumbnail }}
+                style={styles.art}
+                contentFit="cover"
+              />
+            ) : (
+              <LinearGradient
+                colors={[colors.gradientStart, colors.gradientEnd]}
+                style={styles.art}
+              >
+                <Feather name="music" size={80} color="rgba(255,255,255,0.85)" />
+              </LinearGradient>
+            )}
+            <View
+              style={[styles.artHole, { backgroundColor: colors.background }]}
+            />
+          </Animated.View>
+        </View>
+
+        <View style={styles.info}>
+          <Text style={styles.title} numberOfLines={1}>
+            {current.title}
+          </Text>
+          <Text style={styles.artist} numberOfLines={1}>
+            {current.artist}
           </Text>
         </View>
-        <Pressable
-          onPress={() => setPickerOpen(true)}
-          hitSlop={10}
-          style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
-        >
-          <Feather name="more-vertical" size={24} color="#fff" />
-        </Pressable>
-      </View>
 
-      <View style={styles.artContainer}>
-        <Animated.View style={[styles.artWrap, artStyle]}>
-          {current.thumbnail ? (
-            <Image
-              source={{ uri: current.thumbnail }}
-              style={styles.art}
-              contentFit="cover"
-            />
-          ) : (
-            <LinearGradient
-              colors={[colors.gradientStart, colors.gradientEnd]}
-              style={styles.art}
-            >
-              <Feather name="music" size={80} color="rgba(255,255,255,0.85)" />
-            </LinearGradient>
-          )}
-          <View style={[styles.artHole, { backgroundColor: colors.background }]} />
-        </Animated.View>
-      </View>
-
-      <View style={styles.info}>
-        <Text style={styles.title} numberOfLines={1}>
-          {current.title}
-        </Text>
-        <Text style={styles.artist} numberOfLines={1}>
-          {current.artist}
-        </Text>
-      </View>
-
-      <View style={styles.progressWrap}>
-        <View
-          style={[
-            styles.progressTrack,
-            { backgroundColor: "rgba(255,255,255,0.18)" },
-          ]}
-        >
+        <View style={styles.progressWrap}>
           <View
             style={[
-              styles.progressFill,
-              { width: `${progress * 100}%`, backgroundColor: "#fff" },
+              styles.progressTrack,
+              { backgroundColor: "rgba(255,255,255,0.18)" },
             ]}
-          />
-        </View>
-        <View style={styles.progressTimes}>
-          <Text style={styles.timeText}>{formatTime(position)}</Text>
-          <Text style={styles.timeText}>
-            {formatTime(duration || current.duration || 0)}
-          </Text>
-        </View>
-      </View>
-
-      {errorMessage ? (
-        <Text style={[styles.errorText, { color: colors.destructive }]}>
-          {errorMessage}
-        </Text>
-      ) : null}
-
-      <View style={styles.controls}>
-        <Pressable
-          onPress={toggleShuffle}
-          hitSlop={10}
-          style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
-        >
-          <Feather
-            name="shuffle"
-            size={22}
-            color={shuffle ? colors.accent : "rgba(255,255,255,0.75)"}
-          />
-        </Pressable>
-        <Pressable
-          onPress={previous}
-          hitSlop={10}
-          style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
-        >
-          <Feather name="skip-back" size={32} color="#fff" />
-        </Pressable>
-        <Pressable
-          onPress={toggle}
-          style={({ pressed }) => [
-            styles.playBtn,
-            { backgroundColor: "#fff", opacity: pressed ? 0.85 : 1 },
-          ]}
-        >
-          {status === "loading" ? (
-            <ActivityIndicator color={colors.background} />
-          ) : (
-            <Feather
-              name={status === "playing" ? "pause" : "play"}
-              size={32}
-              color={colors.background}
-              style={status === "playing" ? undefined : { marginLeft: 4 }}
-            />
-          )}
-        </Pressable>
-        <Pressable
-          onPress={next}
-          hitSlop={10}
-          style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
-        >
-          <Feather name="skip-forward" size={32} color="#fff" />
-        </Pressable>
-        <Pressable
-          onPress={toggleRepeat}
-          hitSlop={10}
-          style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
-        >
-          <Feather
-            name={repeat === "one" ? "repeat" : "repeat"}
-            size={22}
-            color={repeat !== "off" ? colors.accent : "rgba(255,255,255,0.75)"}
-          />
-          {repeat === "one" ? (
+          >
             <View
-              style={[styles.repeatDot, { backgroundColor: colors.accent }]}
+              style={[
+                styles.progressFill,
+                { width: `${progress * 100}%`, backgroundColor: "#fff" },
+              ]}
             />
-          ) : null}
-        </Pressable>
-      </View>
+          </View>
+          <View style={styles.progressTimes}>
+            <Text style={styles.timeText}>{formatTime(position)}</Text>
+            <Text style={styles.timeText}>
+              {formatTime(duration || current.duration || 0)}
+            </Text>
+          </View>
+        </View>
 
-      <View style={[styles.bottomActions, { paddingBottom: insets.bottom + 14 }]}>
-        <Pressable
-          onPress={() => handleSeek(-10)}
-          style={({ pressed }) => [
-            styles.bottomBtn,
-            { opacity: pressed ? 0.6 : 1 },
-          ]}
-          hitSlop={6}
-        >
-          <Feather name="rewind" size={18} color="rgba(255,255,255,0.85)" />
-          <Text style={styles.bottomLabel}>-10s</Text>
-        </Pressable>
-        <Pressable
-          onPress={() => toggleFavorite(current)}
-          style={({ pressed }) => [
-            styles.bottomBtn,
-            { opacity: pressed ? 0.6 : 1 },
-          ]}
-          hitSlop={6}
-        >
-          <Feather
-            name="heart"
-            size={20}
-            color={isFavorite(current.id) ? colors.accent : "#fff"}
-          />
-          <Text style={styles.bottomLabel}>
-            {isFavorite(current.id) ? "Favorited" : "Favorite"}
+        {errorMessage ? (
+          <Text style={[styles.errorText, { color: colors.destructive }]}>
+            {errorMessage}
           </Text>
-        </Pressable>
-        {current.source === "online" ? (
+        ) : null}
+
+        <View style={styles.controls}>
           <Pressable
-            onPress={handleDownload}
-            disabled={downloading}
+            onPress={toggleShuffle}
+            hitSlop={10}
+            style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+          >
+            <Feather
+              name="shuffle"
+              size={22}
+              color={shuffle ? colors.accent : "rgba(255,255,255,0.75)"}
+            />
+          </Pressable>
+          <Pressable
+            onPress={previous}
+            hitSlop={10}
+            style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+          >
+            <Feather name="skip-back" size={32} color="#fff" />
+          </Pressable>
+          <Pressable
+            onPress={toggle}
+            style={({ pressed }) => [
+              styles.playBtn,
+              { backgroundColor: "#fff", opacity: pressed ? 0.85 : 1 },
+            ]}
+          >
+            {status === "loading" ? (
+              <ActivityIndicator color={colors.background} />
+            ) : (
+              <Feather
+                name={status === "playing" ? "pause" : "play"}
+                size={32}
+                color={colors.background}
+                style={status === "playing" ? undefined : { marginLeft: 4 }}
+              />
+            )}
+          </Pressable>
+          <Pressable
+            onPress={next}
+            hitSlop={10}
+            style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+          >
+            <Feather name="skip-forward" size={32} color="#fff" />
+          </Pressable>
+          <Pressable
+            onPress={toggleRepeat}
+            hitSlop={10}
+            style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+          >
+            <Feather
+              name="repeat"
+              size={22}
+              color={repeat !== "off" ? colors.accent : "rgba(255,255,255,0.75)"}
+            />
+            {repeat === "one" ? (
+              <View
+                style={[styles.repeatDot, { backgroundColor: colors.accent }]}
+              />
+            ) : null}
+          </Pressable>
+        </View>
+
+        <View
+          style={[styles.bottomActions, { paddingBottom: insets.bottom + 14 }]}
+        >
+          <Pressable
+            onPress={() => handleSeek(-10)}
             style={({ pressed }) => [
               styles.bottomBtn,
-              { opacity: pressed || downloading ? 0.6 : 1 },
+              { opacity: pressed ? 0.6 : 1 },
             ]}
             hitSlop={6}
           >
-            {downloading ? (
-              <ActivityIndicator size="small" color="#fff" />
-            ) : (
-              <Feather
-                name={downloaded ? "check-circle" : "download"}
-                size={20}
-                color={downloaded ? colors.success : "#fff"}
-              />
-            )}
+            <Feather name="rewind" size={18} color="rgba(255,255,255,0.85)" />
+            <Text style={styles.bottomLabel}>-10s</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => toggleFavorite(current)}
+            style={({ pressed }) => [
+              styles.bottomBtn,
+              { opacity: pressed ? 0.6 : 1 },
+            ]}
+            hitSlop={6}
+          >
+            <Feather
+              name="heart"
+              size={20}
+              color={isFavorite(current.id) ? colors.accent : "#fff"}
+            />
             <Text style={styles.bottomLabel}>
-              {downloading ? "..." : downloaded ? "Saved" : "Download"}
+              {isFavorite(current.id) ? "Favorit" : "Favorite"}
             </Text>
           </Pressable>
-        ) : null}
-        <Pressable
-          onPress={() => setPickerOpen(true)}
-          style={({ pressed }) => [
-            styles.bottomBtn,
-            { opacity: pressed ? 0.6 : 1 },
-          ]}
-          hitSlop={6}
-        >
-          <Feather name="plus-circle" size={20} color="#fff" />
-          <Text style={styles.bottomLabel}>Playlist</Text>
-        </Pressable>
-        <Pressable
-          onPress={() => handleSeek(10)}
-          style={({ pressed }) => [
-            styles.bottomBtn,
-            { opacity: pressed ? 0.6 : 1 },
-          ]}
-          hitSlop={6}
-        >
-          <Feather name="fast-forward" size={18} color="rgba(255,255,255,0.85)" />
-          <Text style={styles.bottomLabel}>+10s</Text>
-        </Pressable>
-      </View>
+          {current.source === "online" ? (
+            <Pressable
+              onPress={handleDownload}
+              disabled={downloading}
+              style={({ pressed }) => [
+                styles.bottomBtn,
+                { opacity: pressed || downloading ? 0.6 : 1 },
+              ]}
+              hitSlop={6}
+            >
+              {downloading ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Feather
+                  name={downloaded ? "check-circle" : "download"}
+                  size={20}
+                  color={downloaded ? colors.success : "#fff"}
+                />
+              )}
+              <Text style={styles.bottomLabel}>
+                {downloading ? "..." : downloaded ? "Tersimpan" : "Download"}
+              </Text>
+            </Pressable>
+          ) : null}
+          <Pressable
+            onPress={() => setPickerOpen(true)}
+            style={({ pressed }) => [
+              styles.bottomBtn,
+              { opacity: pressed ? 0.6 : 1 },
+            ]}
+            hitSlop={6}
+          >
+            <Feather name="plus-circle" size={20} color="#fff" />
+            <Text style={styles.bottomLabel}>Playlist</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => handleSeek(10)}
+            style={({ pressed }) => [
+              styles.bottomBtn,
+              { opacity: pressed ? 0.6 : 1 },
+            ]}
+            hitSlop={6}
+          >
+            <Feather
+              name="fast-forward"
+              size={18}
+              color="rgba(255,255,255,0.85)"
+            />
+            <Text style={styles.bottomLabel}>+10s</Text>
+          </Pressable>
+        </View>
 
-      <AddToPlaylistSheet
-        visible={pickerOpen}
-        track={current}
-        onClose={() => setPickerOpen(false)}
-      />
-    </View>
+        <AddToPlaylistSheet
+          visible={pickerOpen}
+          track={current}
+          onClose={() => setPickerOpen(false)}
+        />
+      </Animated.View>
+    </GestureDetector>
   );
 }
 
@@ -381,6 +450,13 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
     gap: 12,
   },
+  swipeHint: { alignItems: "center", marginTop: 2 },
+  swipeBar: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "rgba(255,255,255,0.35)",
+  },
   headerEyebrow: {
     color: "rgba(255,255,255,0.7)",
     fontSize: 11,
@@ -394,7 +470,7 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_600SemiBold",
     marginTop: 2,
   },
-  artContainer: { alignItems: "center", marginTop: 28 },
+  artContainer: { alignItems: "center", marginTop: 22 },
   artWrap: {
     width: ART_SIZE,
     height: ART_SIZE,

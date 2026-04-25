@@ -5,10 +5,98 @@ export const SPOTIFY_FALLBACK = "https://spotify.elfar.my.id/api/spotify";
 
 class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  code: string;
+  constructor(message: string, status: number, code = "UNKNOWN") {
     super(message);
     this.status = status;
+    this.code = code;
   }
+}
+
+/**
+ * Translate raw API errors / status codes into user-friendly Indonesian
+ * messages. Keep the original message as a fallback.
+ */
+function friendlyError(rawMessage: string, status: number): { message: string; code: string } {
+  const lower = rawMessage.toLowerCase();
+
+  if (status === 401 || lower.includes("invalid api key") || lower.includes("unauthorized")) {
+    return {
+      message: "API key tidak valid. Cek lagi atau buat akun baru.",
+      code: "INVALID_KEY",
+    };
+  }
+  if (status === 403 && (lower.includes("limit") || lower.includes("quota"))) {
+    return {
+      message: "Kuota harian habis. Coba lagi besok atau upgrade ke Premium.",
+      code: "QUOTA_EXCEEDED",
+    };
+  }
+  if (status === 403) {
+    return {
+      message: "Akses ditolak oleh server.",
+      code: "FORBIDDEN",
+    };
+  }
+  if (
+    status === 409 ||
+    lower.includes("already exists") ||
+    lower.includes("already registered") ||
+    lower.includes("duplicate")
+  ) {
+    return {
+      message: "Email sudah terdaftar. Coba masuk pakai API key kamu.",
+      code: "EMAIL_TAKEN",
+    };
+  }
+  if (
+    lower.includes("invalid email") ||
+    lower.includes("email format") ||
+    lower.includes("must be a valid email")
+  ) {
+    return {
+      message: "Format email tidak valid.",
+      code: "INVALID_EMAIL",
+    };
+  }
+  if (
+    lower.includes("password") &&
+    (lower.includes("short") || lower.includes("weak") || lower.includes("8"))
+  ) {
+    return {
+      message: "Password minimal 8 karakter.",
+      code: "WEAK_PASSWORD",
+    };
+  }
+  if (
+    lower.includes("wrong password") ||
+    lower.includes("incorrect password") ||
+    lower.includes("invalid password")
+  ) {
+    return {
+      message: "Password salah. Coba lagi.",
+      code: "WRONG_PASSWORD",
+    };
+  }
+  if (status === 404) {
+    return {
+      message: "Akun tidak ditemukan.",
+      code: "NOT_FOUND",
+    };
+  }
+  if (status === 429) {
+    return {
+      message: "Terlalu banyak permintaan. Tunggu sebentar lalu coba lagi.",
+      code: "RATE_LIMITED",
+    };
+  }
+  if (status >= 500) {
+    return {
+      message: "Server lagi bermasalah. Coba beberapa saat lagi.",
+      code: "SERVER_ERROR",
+    };
+  }
+  return { message: rawMessage || "Terjadi kesalahan tak terduga.", code: "UNKNOWN" };
 }
 
 async function request<T>(
@@ -21,23 +109,35 @@ async function request<T>(
   };
   if (apiKey) headers["x-api-key"] = apiKey;
 
-  const res = await fetch(`${API_BASE}${path}`, {
-    method: opts.method ?? "GET",
-    headers,
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      method: opts.method ?? "GET",
+      headers,
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+    });
+  } catch {
+    throw new ApiError(
+      "Tidak ada koneksi internet. Cek jaringan kamu.",
+      0,
+      "NETWORK",
+    );
+  }
 
   let data: unknown;
   try {
     data = await res.json();
   } catch {
-    throw new ApiError("Invalid response", res.status);
+    throw new ApiError("Respon server tidak valid.", res.status, "BAD_RESPONSE");
   }
 
   if (!res.ok) {
-    const msg =
-      (data as { error?: string })?.error ?? `Request failed (${res.status})`;
-    throw new ApiError(msg, res.status);
+    const raw =
+      (data as { error?: string; message?: string })?.error ??
+      (data as { error?: string; message?: string })?.message ??
+      `Permintaan gagal (${res.status})`;
+    const { message, code } = friendlyError(raw, res.status);
+    throw new ApiError(message, res.status, code);
   }
 
   return data as T;
@@ -106,10 +206,19 @@ export const api = {
       };
     }
 
-    const fallbackRes = await fetch(
-      `${SPOTIFY_FALLBACK}?link=${encodeURIComponent(spotifyUrl)}`,
-    );
-    const fallback = (await fallbackRes.json()) as {
+    let fallbackRes: Response;
+    try {
+      fallbackRes = await fetch(
+        `${SPOTIFY_FALLBACK}?link=${encodeURIComponent(spotifyUrl)}`,
+      );
+    } catch {
+      throw new ApiError(
+        "Tidak bisa terhubung ke server musik.",
+        0,
+        "NETWORK",
+      );
+    }
+    const fallback = (await fallbackRes.json().catch(() => ({}))) as {
       result?: {
         title?: string;
         artist?: string;
@@ -119,7 +228,13 @@ export const api = {
     };
 
     const url = fallback.result?.url;
-    if (!url) throw new ApiError("Could not resolve stream URL", 502);
+    if (!url) {
+      throw new ApiError(
+        "Lagu ini tidak bisa diputar. Coba lagu lain.",
+        502,
+        "RESOLVE_FAILED",
+      );
+    }
 
     return {
       title: workerData?.title ?? fallback.result?.title,
