@@ -39,6 +39,9 @@ export default function AuthScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState(false);
+  // Set when register hits EMAIL_TAKEN — used to show a friendly notice
+  // on the API key tab so the user knows why they were redirected.
+  const [takenEmail, setTakenEmail] = useState<string | null>(null);
 
   const trimmedEmail = email.trim();
   const trimmedKey = keyInput.trim();
@@ -87,6 +90,17 @@ export default function AuthScreen() {
       }
       router.replace("/(tabs)");
     } catch (err) {
+      // If the email is already registered, fall back to the API key
+      // form so the user knows they should sign in instead.
+      if (err instanceof ApiError && err.code === "EMAIL_TAKEN") {
+        setTakenEmail(trimmedEmail);
+        setMode("key");
+        setSubmitted(false);
+        setError(null);
+        setPassword("");
+        setLoading(false);
+        return;
+      }
       const msg =
         err instanceof ApiError
           ? err.message
@@ -103,6 +117,8 @@ export default function AuthScreen() {
     setMode(next);
     setError(null);
     setSubmitted(false);
+    // Clear the "email taken" notice if the user manually navigates back.
+    if (next === "register") setTakenEmail(null);
   };
 
   return (
@@ -236,6 +252,37 @@ export default function AuthScreen() {
               </View>
             ) : (
               <View style={styles.form}>
+                {takenEmail ? (
+                  <View
+                    style={[
+                      styles.noticeBox,
+                      {
+                        backgroundColor: colors.muted,
+                        borderColor: colors.border,
+                        borderRadius: radius,
+                      },
+                    ]}
+                  >
+                    <Feather
+                      name="info"
+                      size={16}
+                      color={colors.mutedForeground}
+                    />
+                    <Text
+                      style={[
+                        styles.noticeText,
+                        { color: colors.foreground },
+                      ]}
+                    >
+                      Email{" "}
+                      <Text style={{ fontFamily: "Inter_700Bold" }}>
+                        {takenEmail}
+                      </Text>{" "}
+                      sudah terdaftar. Masukin API key kamu di bawah buat
+                      masuk.
+                    </Text>
+                  </View>
+                ) : null}
                 <Field
                   icon="key"
                   label="API key"
@@ -479,6 +526,20 @@ const styles = StyleSheet.create({
   errorText: {
     flex: 1,
     fontSize: 13,
+    fontFamily: "Inter_500Medium",
+  },
+  noticeBox: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  noticeText: {
+    flex: 1,
+    fontSize: 13,
+    lineHeight: 18,
     fontFamily: "Inter_500Medium",
   },
   submit: {
