@@ -15,8 +15,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { SongRow } from "@/components/SongRow";
 import { useLibrary } from "@/contexts/LibraryContext";
-import { usePlayer } from "@/contexts/PlayerContext";
 import { useColors, useRadius } from "@/hooks/useColors";
+import { usePlayResolved } from "@/hooks/usePlayResolved";
 
 export default function PlaylistScreen() {
   const colors = useColors();
@@ -25,7 +25,7 @@ export default function PlaylistScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
   const { getPlaylist, removeFromPlaylist, deletePlaylist } = useLibrary();
-  const { playQueue } = usePlayer();
+  const { playQueue } = usePlayResolved();
   const [shuffleMode, setShuffleMode] = useState(false);
 
   const playlist = getPlaylist(id);

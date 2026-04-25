@@ -5,6 +5,8 @@ const KEYS = {
   playlists: "@etunes/playlists",
   recent: "@etunes/recent",
   searchHistory: "@etunes/search_history",
+  theme: "@etunes/theme",
+  downloads: "@etunes/downloads",
 } as const;
 
 export const storage = {

@@ -10,6 +10,8 @@ export type Track = {
   source: TrackSource;
   spotifyUrl?: string;
   uri?: string;
+  /** Local file URI if this online track has been downloaded for offline use. */
+  localUri?: string;
 };
 
 export type Playlist = {
@@ -39,4 +41,11 @@ export type SearchResultRaw = {
   album?: string;
   release_date?: string;
   url: string;
+};
+
+export type DownloadRecord = {
+  trackId: string;
+  uri: string;
+  size?: number;
+  downloadedAt: number;
 };

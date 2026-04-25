@@ -40,3 +40,11 @@ Android-first mobile music player. Path: `artifacts/etunes`.
 - **State**: three context providers in `contexts/` — `AuthContext` (API key + profile + usage), `PlayerContext` (single global `AudioPlayer` via `createAudioPlayer`), `LibraryContext` (local tracks + playlists). Persisted via `AsyncStorage` keys `@etunes/api_key`, `@etunes/playlists`, `@etunes/recent`, `@etunes/search_history`.
 - **Routes**: `(tabs)/{index,library,playlists,settings}` + `auth` (modal, gates everything via `(tabs)/_layout` redirect) + `player` (modal) + `playlist/[id]`.
 - **Android permissions / plugins** configured in `app.json`: `FOREGROUND_SERVICE_MEDIA_PLAYBACK`, `POST_NOTIFICATIONS`, `READ_MEDIA_AUDIO`; plus `expo-audio` and `expo-media-library` plugins.
+
+#### etunes — feature additions (April 2026)
+
+- **Themes**: 7 themes (Midnight default, Sunshine, Forest Clean, Obsidian, Indigo Dream, Peach Aesthetic, Cyberpunk Neon). Source: `lib/themes.ts`. Selection persisted via `@etunes/theme` and applied through `contexts/ThemeContext.tsx` + `hooks/useColors.ts`. Theme picker lives in the Settings tab as a horizontal swatch carousel.
+- **Offline downloads**: `expo-file-system`'s `File.downloadFileAsync` saves resolved stream URLs into `Paths.document/downloads/`. Persisted in `@etunes/downloads` (uri/size) and `@etunes/downloads/meta` (track metadata). `LibraryContext.resolveTrack()` injects `localUri` and `usePlayResolved` (in `hooks/usePlayResolved.ts`) wraps `playQueue`/`playTrack` so PlayerContext skips the network when the file exists locally. Download / remove button lives in the player screen.
+- **Discover home sections**: `New Releases` (`q=terbaru 2026`) and `Most Popular` (`q=paling populer`) fetched via React Query (30 min staleTime) and rendered as horizontal carousels on `app/(tabs)/index.tsx`. A `Top Artists` row is derived from those results — circular avatars that link to the artist screen.
+- **Artist screen**: `app/artist/[name].tsx` searches the worker for the artist name, shows a circular avatar from the first track's thumbnail, and lists all matching songs with Play / Shuffle buttons. Artist names in `SongRow` are tappable for online tracks.
+- **Smoother navigation**: Player screen modal has `gestureEnabled` + `gestureDirection: "vertical"` so swipe-down dismisses it. Artist screen pushes with `slide_from_right`.

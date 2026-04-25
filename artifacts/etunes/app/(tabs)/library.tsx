@@ -15,7 +15,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AddToPlaylistSheet } from "@/components/AddToPlaylistSheet";
 import { SongRow } from "@/components/SongRow";
 import { useLibrary } from "@/contexts/LibraryContext";
-import { usePlayer } from "@/contexts/PlayerContext";
+import { usePlayResolved } from "@/hooks/usePlayResolved";
 import { useColors, useRadius } from "@/hooks/useColors";
 import type { Track } from "@/lib/types";
 
@@ -26,7 +26,7 @@ export default function LibraryScreen() {
   const router = useRouter();
   const { localTracks, scanLocal, scanning, permission, pickFiles } =
     useLibrary();
-  const { playQueue } = usePlayer();
+  const { playQueue } = usePlayResolved();
   const [pickerTrack, setPickerTrack] = useState<Track | null>(null);
 
   useEffect(() => {

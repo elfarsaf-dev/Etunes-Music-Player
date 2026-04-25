@@ -1,9 +1,9 @@
-import colors from "@/constants/colors";
+import { useTheme } from "@/contexts/ThemeContext";
 
 export function useColors() {
-  return colors.light;
+  return useTheme().theme.colors;
 }
 
 export function useRadius() {
-  return colors.radius;
+  return 14;
 }

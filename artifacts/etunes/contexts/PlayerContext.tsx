@@ -157,14 +157,17 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       try {
         let uri = track.uri;
         if (track.source === "online") {
-          if (!apiKeyRef.current) throw new Error("Sign in to stream songs");
-          if (!track.spotifyUrl)
-            throw new Error("Missing track URL");
-          const resolved = await api.resolveStream(
-            apiKeyRef.current,
-            track.spotifyUrl,
-          );
-          uri = resolved.streamUrl;
+          if (track.localUri) {
+            uri = track.localUri;
+          } else {
+            if (!apiKeyRef.current) throw new Error("Sign in to stream songs");
+            if (!track.spotifyUrl) throw new Error("Missing track URL");
+            const resolved = await api.resolveStream(
+              apiKeyRef.current,
+              track.spotifyUrl,
+            );
+            uri = resolved.streamUrl;
+          }
         }
         if (!uri) throw new Error("No playable source");
         player.replace({ uri });

@@ -20,10 +20,12 @@ import Animated, {
 } from "react-native-reanimated";
 
 import { AddToPlaylistSheet } from "@/components/AddToPlaylistSheet";
+import { useAuth } from "@/contexts/AuthContext";
 import { useLibrary } from "@/contexts/LibraryContext";
 import { usePlayer } from "@/contexts/PlayerContext";
 import { useColors, useRadius } from "@/hooks/useColors";
 import { formatTime } from "@/lib/utils";
+import { Alert } from "react-native";
 
 export default function PlayerScreen() {
   const colors = useColors();
@@ -45,8 +47,44 @@ export default function PlayerScreen() {
     toggleRepeat,
     toggleShuffle,
   } = usePlayer();
-  const { isFavorite, toggleFavorite } = useLibrary();
+  const { apiKey } = useAuth();
+  const {
+    isFavorite,
+    toggleFavorite,
+    isDownloaded,
+    downloadStatus,
+    downloadTrack,
+    removeDownload,
+  } = useLibrary();
   const [pickerOpen, setPickerOpen] = useState(false);
+
+  const dlState = current ? downloadStatus[current.id] : undefined;
+  const downloaded = current ? isDownloaded(current.id) : false;
+  const downloading = dlState === "downloading";
+
+  const handleDownload = async () => {
+    if (!current) return;
+    if (current.source === "local") return;
+    if (downloaded) {
+      Alert.alert("Remove download?", `"${current.title}" will be deleted from this device.`, [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Remove",
+          style: "destructive",
+          onPress: () => removeDownload(current.id),
+        },
+      ]);
+      return;
+    }
+    try {
+      await downloadTrack(current, apiKey);
+    } catch (e) {
+      Alert.alert(
+        "Download failed",
+        e instanceof Error ? e.message : "Could not download",
+      );
+    }
+  };
 
   const rotation = useSharedValue(0);
 
@@ -271,6 +309,30 @@ export default function PlayerScreen() {
             {isFavorite(current.id) ? "Favorited" : "Favorite"}
           </Text>
         </Pressable>
+        {current.source === "online" ? (
+          <Pressable
+            onPress={handleDownload}
+            disabled={downloading}
+            style={({ pressed }) => [
+              styles.bottomBtn,
+              { opacity: pressed || downloading ? 0.6 : 1 },
+            ]}
+            hitSlop={6}
+          >
+            {downloading ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Feather
+                name={downloaded ? "check-circle" : "download"}
+                size={20}
+                color={downloaded ? colors.success : "#fff"}
+              />
+            )}
+            <Text style={styles.bottomLabel}>
+              {downloading ? "..." : downloaded ? "Saved" : "Download"}
+            </Text>
+          </Pressable>
+        ) : null}
         <Pressable
           onPress={() => setPickerOpen(true)}
           style={({ pressed }) => [

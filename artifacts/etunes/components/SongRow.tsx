@@ -1,9 +1,11 @@
 import { Feather } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
+import { router } from "expo-router";
 import React from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
+import { useLibrary } from "@/contexts/LibraryContext";
 import { usePlayer } from "@/contexts/PlayerContext";
 import { useColors, useRadius } from "@/hooks/useColors";
 import type { Track } from "@/lib/types";
@@ -16,6 +18,8 @@ type Props = {
   onMore?: () => void;
   showIndex?: boolean;
   rightSlot?: React.ReactNode;
+  /** Make the artist name tappable to open the artist screen. */
+  linkArtist?: boolean;
 };
 
 export function SongRow({
@@ -25,11 +29,19 @@ export function SongRow({
   onMore,
   showIndex,
   rightSlot,
+  linkArtist = true,
 }: Props) {
   const colors = useColors();
   const radius = useRadius();
   const { current, status } = usePlayer();
+  const { isDownloaded } = useLibrary();
   const isActive = current?.id === track.id;
+  const downloaded = isDownloaded(track.id) || !!track.localUri;
+
+  const openArtist = () => {
+    if (!track.artist || track.artist === "Local file") return;
+    router.push(`/artist/${encodeURIComponent(track.artist)}`);
+  };
 
   return (
     <Pressable
@@ -91,13 +103,32 @@ export function SongRow({
           {track.source === "local" ? (
             <Feather name="hard-drive" size={11} color={colors.mutedForeground} />
           ) : null}
-          <Text
-            numberOfLines={1}
-            style={[styles.artist, { color: colors.mutedForeground }]}
-          >
-            {track.artist}
-            {track.album ? ` • ${track.album}` : ""}
-          </Text>
+          {downloaded ? (
+            <Feather name="arrow-down-circle" size={11} color={colors.success} />
+          ) : null}
+          {linkArtist && track.source === "online" ? (
+            <Pressable onPress={openArtist} hitSlop={6} style={{ flexShrink: 1 }}>
+              <Text
+                numberOfLines={1}
+                style={[
+                  styles.artist,
+                  styles.artistLink,
+                  { color: colors.mutedForeground },
+                ]}
+              >
+                {track.artist}
+                {track.album ? ` • ${track.album}` : ""}
+              </Text>
+            </Pressable>
+          ) : (
+            <Text
+              numberOfLines={1}
+              style={[styles.artist, { color: colors.mutedForeground }]}
+            >
+              {track.artist}
+              {track.album ? ` • ${track.album}` : ""}
+            </Text>
+          )}
         </View>
       </View>
 
@@ -150,6 +181,7 @@ const styles = StyleSheet.create({
   title: { fontSize: 15 },
   metaRow: { flexDirection: "row", alignItems: "center", gap: 5 },
   artist: { fontSize: 12, fontFamily: "Inter_400Regular", flex: 1 },
+  artistLink: { textDecorationLine: "none" },
   right: { flexDirection: "row", alignItems: "center", gap: 12 },
   duration: { fontSize: 12, fontFamily: "Inter_500Medium" },
   playingDot: { width: 6, height: 6, borderRadius: 3 },

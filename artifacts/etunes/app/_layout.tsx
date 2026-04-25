@@ -18,21 +18,23 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { LibraryProvider } from "@/contexts/LibraryContext";
 import { PlayerProvider } from "@/contexts/PlayerContext";
-import colors from "@/constants/colors";
+import { ThemeProvider, useTheme } from "@/contexts/ThemeContext";
+import { useColors } from "@/hooks/useColors";
 
 SplashScreen.preventAutoHideAsync();
 
 const queryClient = new QueryClient();
 
 function RootLayoutNav() {
+  const colors = useColors();
   return (
     <Stack
       screenOptions={{
-        headerStyle: { backgroundColor: colors.light.background },
-        headerTintColor: colors.light.foreground,
+        headerStyle: { backgroundColor: colors.background },
+        headerTintColor: colors.foreground,
         headerTitleStyle: { fontFamily: "Inter_600SemiBold" },
         headerShadowVisible: false,
-        contentStyle: { backgroundColor: colors.light.background },
+        contentStyle: { backgroundColor: colors.background },
       }}
     >
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
@@ -50,6 +52,8 @@ function RootLayoutNav() {
           headerShown: false,
           presentation: "modal",
           animation: "slide_from_bottom",
+          gestureEnabled: true,
+          gestureDirection: "vertical",
         }}
       />
       <Stack.Screen
@@ -59,7 +63,36 @@ function RootLayoutNav() {
           headerTransparent: true,
         }}
       />
+      <Stack.Screen
+        name="artist/[name]"
+        options={{
+          headerShown: false,
+          presentation: "card",
+          animation: "slide_from_right",
+        }}
+      />
     </Stack>
+  );
+}
+
+function ThemedRoot() {
+  const colors = useColors();
+  const { theme } = useTheme();
+  return (
+    <GestureHandlerRootView
+      style={{ flex: 1, backgroundColor: colors.background }}
+    >
+      <KeyboardProvider>
+        <AuthProvider>
+          <LibraryProvider>
+            <PlayerProvider>
+              <StatusBar style={theme.colors.isLight ? "dark" : "light"} />
+              <RootLayoutNav />
+            </PlayerProvider>
+          </LibraryProvider>
+        </AuthProvider>
+      </KeyboardProvider>
+    </GestureHandlerRootView>
   );
 }
 
@@ -83,18 +116,9 @@ export default function RootLayout() {
     <SafeAreaProvider>
       <ErrorBoundary>
         <QueryClientProvider client={queryClient}>
-          <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.light.background }}>
-            <KeyboardProvider>
-              <AuthProvider>
-                <LibraryProvider>
-                  <PlayerProvider>
-                    <StatusBar style="light" />
-                    <RootLayoutNav />
-                  </PlayerProvider>
-                </LibraryProvider>
-              </AuthProvider>
-            </KeyboardProvider>
-          </GestureHandlerRootView>
+          <ThemeProvider>
+            <ThemedRoot />
+          </ThemeProvider>
         </QueryClientProvider>
       </ErrorBoundary>
     </SafeAreaProvider>

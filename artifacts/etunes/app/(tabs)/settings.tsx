@@ -14,7 +14,9 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useAuth } from "@/contexts/AuthContext";
+import { useLibrary } from "@/contexts/LibraryContext";
 import { usePlayer } from "@/contexts/PlayerContext";
+import { useTheme } from "@/contexts/ThemeContext";
 import { useColors, useRadius } from "@/hooks/useColors";
 
 export default function SettingsScreen() {
@@ -24,6 +26,8 @@ export default function SettingsScreen() {
   const router = useRouter();
   const { profile, usage, apiKey, refresh, regenerate, signOut } = useAuth();
   const { stop } = usePlayer();
+  const { downloads, downloadedTracks } = useLibrary();
+  const { theme, themes, setThemeId } = useTheme();
   const [showKey, setShowKey] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -74,6 +78,12 @@ export default function SettingsScreen() {
       ? apiKey
       : `${apiKey.slice(0, 4)}${"•".repeat(Math.max(0, apiKey.length - 8))}${apiKey.slice(-4)}`
     : "";
+
+  const totalDownloadBytes = Object.values(downloads).reduce(
+    (sum, d) => sum + (d.size ?? 0),
+    0,
+  );
+  const sizeMB = (totalDownloadBytes / 1024 / 1024).toFixed(1);
 
   return (
     <View style={[styles.root, { backgroundColor: colors.background }]}>
@@ -147,10 +157,7 @@ export default function SettingsScreen() {
               </View>
               <View style={styles.usageTrack}>
                 <View
-                  style={[
-                    styles.usageFill,
-                    { width: `${usagePct * 100}%` },
-                  ]}
+                  style={[styles.usageFill, { width: `${usagePct * 100}%` }]}
                 />
               </View>
               <Text style={styles.usageHint}>
@@ -160,6 +167,90 @@ export default function SettingsScreen() {
               </Text>
             </View>
           ) : null}
+        </View>
+
+        <SectionHeader>Theme</SectionHeader>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.themeRow}
+        >
+          {themes.map((t) => {
+            const active = t.id === theme.id;
+            return (
+              <Pressable
+                key={t.id}
+                onPress={() => setThemeId(t.id)}
+                style={({ pressed }) => [
+                  styles.themeCard,
+                  {
+                    borderColor: active ? colors.primary : colors.border,
+                    backgroundColor: colors.cardElevated,
+                    borderRadius: radius,
+                    opacity: pressed ? 0.85 : 1,
+                    borderWidth: active ? 2 : StyleSheet.hairlineWidth,
+                  },
+                ]}
+              >
+                <LinearGradient
+                  colors={[t.swatch[0], t.swatch[1]]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={[styles.themeSwatch, { borderRadius: radius - 4 }]}
+                >
+                  <View
+                    style={[
+                      styles.themeBgChip,
+                      { backgroundColor: t.swatch[2] },
+                    ]}
+                  />
+                </LinearGradient>
+                <Text
+                  style={[styles.themeName, { color: colors.foreground }]}
+                  numberOfLines={1}
+                >
+                  {t.name}
+                </Text>
+                {active ? (
+                  <View
+                    style={[
+                      styles.themeCheck,
+                      { backgroundColor: colors.primary },
+                    ]}
+                  >
+                    <Feather
+                      name="check"
+                      size={12}
+                      color={colors.primaryForeground}
+                    />
+                  </View>
+                ) : null}
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+
+        <SectionHeader>Downloads</SectionHeader>
+        <View
+          style={[
+            styles.section,
+            { backgroundColor: colors.cardElevated, borderRadius: radius },
+          ]}
+        >
+          <View style={styles.row}>
+            <Feather name="hard-drive" size={20} color={colors.primary} />
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.rowTitle, { color: colors.foreground }]}>
+                {downloadedTracks.length}{" "}
+                {downloadedTracks.length === 1 ? "song" : "songs"} offline
+              </Text>
+              <Text
+                style={[styles.rowMono, { color: colors.mutedForeground }]}
+              >
+                {sizeMB} MB on this device
+              </Text>
+            </View>
+          </View>
         </View>
 
         <SectionHeader>API Key</SectionHeader>
@@ -181,10 +272,7 @@ export default function SettingsScreen() {
               </Text>
               <Text
                 numberOfLines={1}
-                style={[
-                  styles.rowMono,
-                  { color: colors.mutedForeground },
-                ]}
+                style={[styles.rowMono, { color: colors.mutedForeground }]}
               >
                 {maskedKey}
               </Text>
@@ -286,7 +374,12 @@ const styles = StyleSheet.create({
     gap: 14,
   },
   profileTop: { flexDirection: "row", alignItems: "center", gap: 14 },
-  avatar: { width: 50, height: 50, alignItems: "center", justifyContent: "center" },
+  avatar: {
+    width: 50,
+    height: 50,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   profileLabel: {
     color: "rgba(255,255,255,0.75)",
     fontSize: 11,
@@ -309,7 +402,11 @@ const styles = StyleSheet.create({
   tierText: { color: "#fff", fontFamily: "Inter_700Bold", fontSize: 11 },
   usageBlock: { gap: 8 },
   usageRow: { flexDirection: "row", justifyContent: "space-between" },
-  usageLabel: { color: "rgba(255,255,255,0.85)", fontFamily: "Inter_500Medium", fontSize: 12 },
+  usageLabel: {
+    color: "rgba(255,255,255,0.85)",
+    fontFamily: "Inter_500Medium",
+    fontSize: 12,
+  },
   usageValue: { color: "#fff", fontFamily: "Inter_700Bold", fontSize: 12 },
   usageTrack: {
     height: 6,
@@ -318,7 +415,11 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   usageFill: { height: 6, backgroundColor: "#fff" },
-  usageHint: { color: "rgba(255,255,255,0.7)", fontFamily: "Inter_400Regular", fontSize: 11 },
+  usageHint: {
+    color: "rgba(255,255,255,0.7)",
+    fontFamily: "Inter_400Regular",
+    fontSize: 11,
+  },
   sectionHeader: {
     fontFamily: "Inter_700Bold",
     fontSize: 11,
@@ -343,5 +444,45 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontFamily: "Inter_400Regular",
     marginTop: 32,
+  },
+  themeRow: {
+    paddingHorizontal: 16,
+    gap: 12,
+    paddingBottom: 4,
+  },
+  themeCard: {
+    width: 120,
+    padding: 10,
+    alignItems: "center",
+  },
+  themeSwatch: {
+    width: 100,
+    height: 70,
+    overflow: "hidden",
+    justifyContent: "flex-end",
+    alignItems: "flex-end",
+    padding: 8,
+  },
+  themeBgChip: {
+    width: 28,
+    height: 28,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.3)",
+  },
+  themeName: {
+    fontSize: 12,
+    fontFamily: "Inter_600SemiBold",
+    marginTop: 8,
+  },
+  themeCheck: {
+    position: "absolute",
+    top: 6,
+    right: 6,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
   },
 });

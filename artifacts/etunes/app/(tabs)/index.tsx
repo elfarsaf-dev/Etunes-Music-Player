@@ -3,11 +3,12 @@ import { useQuery } from "@tanstack/react-query";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -21,6 +22,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useLibrary } from "@/contexts/LibraryContext";
 import { usePlayer } from "@/contexts/PlayerContext";
 import { useColors, useRadius } from "@/hooks/useColors";
+import { usePlayResolved } from "@/hooks/usePlayResolved";
 import { api } from "@/lib/api";
 import { storage } from "@/lib/storage";
 import type { SearchResultRaw, Track } from "@/lib/types";
@@ -49,7 +51,7 @@ export default function HomeScreen() {
   const router = useRouter();
   const { apiKey } = useAuth();
   const { current } = usePlayer();
-  const { playQueue } = usePlayer();
+  const { playQueue } = usePlayResolved();
   const { isFavorite, toggleFavorite } = useLibrary();
 
   const [query, setQuery] = useState("");
@@ -76,6 +78,22 @@ export default function HomeScreen() {
     },
   });
 
+  const newReleases = useQuery({
+    queryKey: ["section", "terbaru-2026", apiKey],
+    enabled: !!apiKey,
+    staleTime: 1000 * 60 * 30,
+    queryFn: async () =>
+      apiKey ? api.search(apiKey, "terbaru 2026") : [],
+  });
+
+  const popular = useQuery({
+    queryKey: ["section", "paling-populer", apiKey],
+    enabled: !!apiKey,
+    staleTime: 1000 * 60 * 30,
+    queryFn: async () =>
+      apiKey ? api.search(apiKey, "paling populer") : [],
+  });
+
   const handleSubmit = async () => {
     const q = query.trim();
     if (!q) return;
@@ -85,10 +103,23 @@ export default function HomeScreen() {
     await storage.set(storage.keys.searchHistory, next);
   };
 
-  const results = (search.data ?? []).map(toTrack);
+  const results = useMemo(() => (search.data ?? []).map(toTrack), [search.data]);
+  const newReleaseTracks = useMemo(
+    () => (newReleases.data ?? []).slice(0, 12).map(toTrack),
+    [newReleases.data],
+  );
+  const popularTracks = useMemo(
+    () => (popular.data ?? []).slice(0, 12).map(toTrack),
+    [popular.data],
+  );
 
   const handlePlayResult = (idx: number) => {
     playQueue(results, idx);
+    router.push("/player");
+  };
+
+  const handlePlaySection = (tracks: Track[], idx: number) => {
+    playQueue(tracks, idx);
     router.push("/player");
   };
 
@@ -173,14 +204,19 @@ export default function HomeScreen() {
             <BrowseHome
               recents={recents}
               history={history}
+              newReleases={newReleaseTracks}
+              popular={popularTracks}
+              loadingNew={newReleases.isFetching}
+              loadingPopular={popular.isFetching}
               onSearch={(q) => {
                 setQuery(q);
                 setSubmitted(q);
               }}
-              onPlayRecent={(t, idx) => {
-                playQueue(recents, idx);
-                router.push("/player");
-              }}
+              onPlayRecent={(t, idx) => handlePlaySection(recents, idx)}
+              onPlaySection={handlePlaySection}
+              onOpenArtist={(name) =>
+                router.push(`/artist/${encodeURIComponent(name)}`)
+              }
             />
           )
         }
@@ -222,16 +258,43 @@ export default function HomeScreen() {
 function BrowseHome({
   recents,
   history,
+  newReleases,
+  popular,
+  loadingNew,
+  loadingPopular,
   onSearch,
   onPlayRecent,
+  onPlaySection,
+  onOpenArtist,
 }: {
   recents: Track[];
   history: string[];
+  newReleases: Track[];
+  popular: Track[];
+  loadingNew: boolean;
+  loadingPopular: boolean;
   onSearch: (q: string) => void;
   onPlayRecent: (track: Track, index: number) => void;
+  onPlaySection: (tracks: Track[], index: number) => void;
+  onOpenArtist: (name: string) => void;
 }) {
   const colors = useColors();
   const radius = useRadius();
+
+  const featuredArtists = useMemo(() => {
+    const seen = new Set<string>();
+    const list: { name: string; thumbnail?: string }[] = [];
+    for (const t of [...popular, ...newReleases]) {
+      if (!t.artist || t.artist === "Local file") continue;
+      const key = t.artist.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      list.push({ name: t.artist, thumbnail: t.thumbnail });
+      if (list.length >= 10) break;
+    }
+    return list;
+  }, [popular, newReleases]);
+
   return (
     <View style={{ paddingTop: 8 }}>
       {history.length > 0 ? (
@@ -264,6 +327,65 @@ function BrowseHome({
           </View>
         </View>
       ) : null}
+
+      <CardCarousel
+        title="New releases · 2026"
+        subtitle="Lagu terbaru tahun ini"
+        loading={loadingNew}
+        tracks={newReleases}
+        onPlay={(idx) => onPlaySection(newReleases, idx)}
+      />
+
+      {featuredArtists.length > 0 ? (
+        <View style={styles.section}>
+          <SectionHeader title="Top artists" />
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ paddingHorizontal: 16, gap: 14 }}
+          >
+            {featuredArtists.map((a) => (
+              <Pressable
+                key={a.name}
+                onPress={() => onOpenArtist(a.name)}
+                style={({ pressed }) => [
+                  styles.artistCard,
+                  { opacity: pressed ? 0.75 : 1 },
+                ]}
+              >
+                {a.thumbnail ? (
+                  <Image
+                    source={{ uri: a.thumbnail }}
+                    style={styles.artistAvatar}
+                    contentFit="cover"
+                  />
+                ) : (
+                  <LinearGradient
+                    colors={[colors.gradientStart, colors.gradientEnd]}
+                    style={styles.artistAvatar}
+                  >
+                    <Feather name="user" size={28} color="#fff" />
+                  </LinearGradient>
+                )}
+                <Text
+                  style={[styles.artistName, { color: colors.foreground }]}
+                  numberOfLines={1}
+                >
+                  {a.name}
+                </Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+        </View>
+      ) : null}
+
+      <CardCarousel
+        title="Most popular"
+        subtitle="Yang lagi viral"
+        loading={loadingPopular}
+        tracks={popular}
+        onPlay={(idx) => onPlaySection(popular, idx)}
+      />
 
       {recents.length > 0 ? (
         <View style={styles.section}>
@@ -321,7 +443,12 @@ function BrowseHome({
         </View>
       ) : null}
 
-      {history.length === 0 && recents.length === 0 ? (
+      {history.length === 0 &&
+      recents.length === 0 &&
+      newReleases.length === 0 &&
+      popular.length === 0 &&
+      !loadingNew &&
+      !loadingPopular ? (
         <View style={{ paddingTop: 60 }}>
           <EmptyState
             icon="music"
@@ -334,12 +461,107 @@ function BrowseHome({
   );
 }
 
-function SectionHeader({ title }: { title: string }) {
+function CardCarousel({
+  title,
+  subtitle,
+  tracks,
+  loading,
+  onPlay,
+}: {
+  title: string;
+  subtitle?: string;
+  tracks: Track[];
+  loading: boolean;
+  onPlay: (idx: number) => void;
+}) {
+  const colors = useColors();
+  const radius = useRadius();
+  if (loading && tracks.length === 0) {
+    return (
+      <View style={styles.section}>
+        <SectionHeader title={title} subtitle={subtitle} />
+        <View style={{ paddingHorizontal: 16, paddingVertical: 12 }}>
+          <ActivityIndicator color={colors.primary} />
+        </View>
+      </View>
+    );
+  }
+  if (tracks.length === 0) return null;
+  return (
+    <View style={styles.section}>
+      <SectionHeader title={title} subtitle={subtitle} />
+      <FlatList
+        data={tracks}
+        horizontal
+        keyExtractor={(t) => t.id}
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}
+        renderItem={({ item, index }) => (
+          <Pressable
+            onPress={() => onPlay(index)}
+            style={({ pressed }) => [
+              styles.bigCard,
+              {
+                backgroundColor: colors.cardElevated,
+                borderRadius: radius,
+                opacity: pressed ? 0.85 : 1,
+              },
+            ]}
+          >
+            {item.thumbnail ? (
+              <Image
+                source={{ uri: item.thumbnail }}
+                style={[styles.bigArt, { borderRadius: radius - 4 }]}
+                contentFit="cover"
+              />
+            ) : (
+              <LinearGradient
+                colors={[colors.gradientStart, colors.gradientEnd]}
+                style={[styles.bigArt, { borderRadius: radius - 4 }]}
+              >
+                <Feather name="music" size={32} color="#fff" />
+              </LinearGradient>
+            )}
+            <Text
+              style={[styles.bigTitle, { color: colors.foreground }]}
+              numberOfLines={2}
+            >
+              {item.title}
+            </Text>
+            <Text
+              style={[styles.bigArtist, { color: colors.mutedForeground }]}
+              numberOfLines={1}
+            >
+              {item.artist}
+            </Text>
+          </Pressable>
+        )}
+      />
+    </View>
+  );
+}
+
+function SectionHeader({
+  title,
+  subtitle,
+}: {
+  title: string;
+  subtitle?: string;
+}) {
   const colors = useColors();
   return (
-    <Text style={[styles.sectionHeader, { color: colors.foreground }]}>
-      {title}
-    </Text>
+    <View style={{ paddingHorizontal: 22, paddingTop: 8, paddingBottom: 4 }}>
+      <Text style={[styles.sectionHeader, { color: colors.foreground }]}>
+        {title}
+      </Text>
+      {subtitle ? (
+        <Text
+          style={[styles.sectionSub, { color: colors.mutedForeground }]}
+        >
+          {subtitle}
+        </Text>
+      ) : null}
+    </View>
   );
 }
 
@@ -386,7 +608,7 @@ function ErrorState({ message }: { message: string }) {
         <Feather name="alert-triangle" size={28} color={colors.destructive} />
       </View>
       <Text style={[styles.emptyTitle, { color: colors.foreground }]}>
-        Couldn't search
+        Couldn&apos;t search
       </Text>
       <Text style={[styles.emptySub, { color: colors.mutedForeground }]}>
         {message}
@@ -415,15 +637,23 @@ const styles = StyleSheet.create({
   },
   searchInput: { flex: 1, fontSize: 15, fontFamily: "Inter_500Medium" },
   loadingWrap: { paddingTop: 60, alignItems: "center" },
-  section: { paddingTop: 8, paddingBottom: 16, gap: 10 },
+  section: { paddingTop: 8, paddingBottom: 16, gap: 6 },
   sectionHeader: {
-    fontSize: 16,
+    fontSize: 18,
     fontFamily: "Inter_700Bold",
-    paddingHorizontal: 22,
-    paddingTop: 8,
-    paddingBottom: 4,
+    letterSpacing: -0.3,
   },
-  chips: { flexDirection: "row", flexWrap: "wrap", gap: 8, paddingHorizontal: 22 },
+  sectionSub: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    marginTop: 2,
+  },
+  chips: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    paddingHorizontal: 22,
+  },
   chip: {
     flexDirection: "row",
     alignItems: "center",
@@ -435,10 +665,43 @@ const styles = StyleSheet.create({
   },
   chipText: { fontSize: 12, fontFamily: "Inter_500Medium" },
   recentCard: { width: 140, padding: 10 },
-  recentArt: { width: 120, height: 120, alignItems: "center", justifyContent: "center" },
+  recentArt: {
+    width: 120,
+    height: 120,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   recentTitle: { fontSize: 13, fontFamily: "Inter_600SemiBold", marginTop: 8 },
   recentArtist: { fontSize: 11, fontFamily: "Inter_400Regular", marginTop: 2 },
-  empty: { alignItems: "center", paddingVertical: 60, paddingHorizontal: 30, gap: 12 },
+  bigCard: { width: 160, padding: 10 },
+  bigArt: {
+    width: 140,
+    height: 140,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  bigTitle: { fontSize: 13, fontFamily: "Inter_600SemiBold", marginTop: 10 },
+  bigArtist: { fontSize: 11, fontFamily: "Inter_400Regular", marginTop: 2 },
+  artistCard: { alignItems: "center", width: 96 },
+  artistAvatar: {
+    width: 88,
+    height: 88,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  artistName: {
+    fontSize: 12,
+    fontFamily: "Inter_600SemiBold",
+    marginTop: 8,
+    textAlign: "center",
+  },
+  empty: {
+    alignItems: "center",
+    paddingVertical: 60,
+    paddingHorizontal: 30,
+    gap: 12,
+  },
   emptyIcon: {
     width: 72,
     height: 72,
@@ -447,5 +710,9 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   emptyTitle: { fontSize: 18, fontFamily: "Inter_700Bold" },
-  emptySub: { fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center" },
+  emptySub: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    textAlign: "center",
+  },
 });
