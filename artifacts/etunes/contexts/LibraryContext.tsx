@@ -1,5 +1,5 @@
 import * as DocumentPicker from "expo-document-picker";
-import { Directory, File, Paths } from "expo-file-system";
+import * as FileSystem from "expo-file-system/legacy";
 import * as MediaLibrary from "expo-media-library";
 import React, {
   createContext,
@@ -61,11 +61,18 @@ function makeFavoritesPlaylist(): Playlist {
   };
 }
 
-function getDownloadsDir(): Directory | null {
+async function getDownloadsDir(): Promise<string | null> {
   if (Platform.OS === "web") return null;
+  const baseDir = FileSystem.documentDirectory;
+  if (!baseDir) return null;
+  const dir = baseDir.endsWith("/")
+    ? `${baseDir}downloads/`
+    : `${baseDir}/downloads/`;
   try {
-    const dir = new Directory(Paths.document, "downloads");
-    if (!dir.exists) dir.create({ intermediates: true });
+    const info = await FileSystem.getInfoAsync(dir);
+    if (!info.exists) {
+      await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+    }
     return dir;
   } catch {
     return null;
@@ -358,9 +365,11 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
         const resolved = await api.resolveStream(apiKey, track.spotifyUrl);
 
         // Save into app-private downloads directory
-        const dir = getDownloadsDir();
+        const dir = await getDownloadsDir();
         if (!dir) {
-          throw new Error("Tidak bisa akses penyimpanan internal aplikasi.");
+          throw new Error(
+            "Tidak bisa akses folder download. Coba restart aplikasi.",
+          );
         }
 
         const ext = (() => {
@@ -369,13 +378,39 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
           return m ? `.${m[1]}` : ".mp3";
         })();
         const fileName = `${safeFileName(track.id)}${ext}`;
-        const destination = new File(dir, fileName);
-        if (destination.exists) destination.delete();
+        const destinationUri = `${dir}${fileName}`;
 
-        const downloaded = await File.downloadFileAsync(
-          resolved.streamUrl,
-          destination,
-        );
+        try {
+          const existing = await FileSystem.getInfoAsync(destinationUri);
+          if (existing.exists) {
+            await FileSystem.deleteAsync(destinationUri, { idempotent: true });
+          }
+        } catch {
+          // ignore — best effort cleanup before re-download
+        }
+
+        let downloadResult;
+        try {
+          downloadResult = await FileSystem.downloadAsync(
+            resolved.streamUrl,
+            destinationUri,
+          );
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : String(e);
+          throw new Error(`Gagal mendownload file: ${msg}`);
+        }
+
+        if (!downloadResult || downloadResult.status >= 400) {
+          throw new Error(
+            `Server lagu tidak merespon (status ${downloadResult?.status ?? "?"}). Coba lagi nanti.`,
+          );
+        }
+
+        const finalInfo = await FileSystem.getInfoAsync(downloadResult.uri);
+        const fileSize =
+          finalInfo.exists && "size" in finalInfo
+            ? (finalInfo.size as number)
+            : 0;
 
         // Try to also save to the device's Music library so it shows up in
         // the system music app. Fail silently if permission isn't granted —
@@ -387,7 +422,9 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
             setPermission(perm.status);
           }
           if (perm.status === "granted") {
-            const asset = await MediaLibrary.createAssetAsync(downloaded.uri);
+            const asset = await MediaLibrary.createAssetAsync(
+              downloadResult.uri,
+            );
             try {
               const album = await MediaLibrary.getAlbumAsync("etunes");
               if (album) {
@@ -409,8 +446,8 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
 
         const record: DownloadRecord = {
           trackId: track.id,
-          uri: downloaded.uri,
-          size: downloaded.size,
+          uri: downloadResult.uri,
+          size: fileSize,
           downloadedAt: Date.now(),
         };
         const nextDl = { ...downloads, [track.id]: record };
@@ -418,7 +455,7 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
 
         const nextMeta = {
           ...downloadedMeta,
-          [track.id]: { ...track, localUri: downloaded.uri },
+          [track.id]: { ...track, localUri: downloadResult.uri },
         };
         await persistDownloadedMeta(nextMeta);
 
@@ -436,8 +473,7 @@ export function LibraryProvider({ children }: { children: React.ReactNode }) {
       const record = downloads[trackId];
       if (!record) return;
       try {
-        const file = new File(record.uri);
-        if (file.exists) file.delete();
+        await FileSystem.deleteAsync(record.uri, { idempotent: true });
       } catch {
         // ignore filesystem errors
       }
