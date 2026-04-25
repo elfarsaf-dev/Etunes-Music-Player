@@ -48,3 +48,9 @@ Android-first mobile music player. Path: `artifacts/etunes`.
 - **Discover home sections**: `New Releases` (`q=terbaru 2026`) and `Most Popular` (`q=paling populer`) fetched via React Query (30 min staleTime) and rendered as horizontal carousels on `app/(tabs)/index.tsx`. A `Top Artists` row is derived from those results — circular avatars that link to the artist screen.
 - **Artist screen**: `app/artist/[name].tsx` searches the worker for the artist name, shows a circular avatar from the first track's thumbnail, and lists all matching songs with Play / Shuffle buttons. Artist names in `SongRow` are tappable for online tracks.
 - **Smoother navigation**: Player screen modal has `gestureEnabled` + `gestureDirection: "vertical"` so swipe-down dismisses it. Artist screen pushes with `slide_from_right`.
+
+#### etunes — EAS Build setup
+
+- `artifacts/etunes/eas.json` defines 3 profiles: `development` (APK + dev client), `preview` (APK, internal distribution), `production` (AAB, autoIncrement). Submit profile targets Play Store internal track.
+- Convenience scripts in `package.json`: `build:apk`, `build:android`, `build:dev`, `submit:android`, `eas:init`, `eas:login`, `eas:whoami`.
+- Setup guide: `artifacts/etunes/EAS_BUILD.md`. User runs `eas init` locally to attach `extra.eas.projectId` + `owner` to `app.json` (not committed yet — must be done from local machine with `eas login`).
