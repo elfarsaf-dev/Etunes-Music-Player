@@ -27,6 +27,36 @@ class ApiError extends Error {
 function friendlyError(rawMessage: string, status: number): { message: string; code: string } {
   const lower = rawMessage.toLowerCase();
 
+  if (lower.includes("username sudah dipakai") || lower.includes("username taken")) {
+    return {
+      message: "Username sudah dipakai. Coba username lain.",
+      code: "USERNAME_TAKEN",
+    };
+  }
+  if (lower.includes("akun tidak ditemukan") || lower.includes("user not found")) {
+    return {
+      message: "Akun tidak ditemukan. Cek lagi username kamu.",
+      code: "ACCOUNT_NOT_FOUND",
+    };
+  }
+  if (
+    lower.includes("password salah") ||
+    lower.includes("wrong password") ||
+    lower.includes("incorrect password") ||
+    lower.includes("invalid password") ||
+    lower.includes("invalid login credentials")
+  ) {
+    return {
+      message: "Password salah. Coba lagi.",
+      code: "WRONG_PASSWORD",
+    };
+  }
+  if (lower.includes("api key salah") || lower.includes("api key tidak valid")) {
+    return {
+      message: "API key tidak valid. Cek lagi atau buat akun baru.",
+      code: "INVALID_KEY",
+    };
+  }
   if (status === 401 || lower.includes("invalid api key") || lower.includes("unauthorized")) {
     return {
       message: "API key tidak valid. Cek lagi atau buat akun baru.",
@@ -43,52 +73,6 @@ function friendlyError(rawMessage: string, status: number): { message: string; c
     return {
       message: "Akses ditolak oleh server.",
       code: "FORBIDDEN",
-    };
-  }
-  if (
-    status === 409 ||
-    lower.includes("already exists") ||
-    lower.includes("already registered") ||
-    lower.includes("duplicate") ||
-    // The Cloudflare worker returns 500 with this generic message whenever
-    // the email is already in its DB (it doesn't differentiate). Treating
-    // this as EMAIL_TAKEN lets the client fall back to the API key form
-    // instead of dead-ending on "Server bermasalah".
-    lower.includes("gagal register") ||
-    lower.includes("register failed")
-  ) {
-    return {
-      message: "Email sudah terdaftar. Coba masuk pakai API key kamu.",
-      code: "EMAIL_TAKEN",
-    };
-  }
-  if (
-    lower.includes("invalid email") ||
-    lower.includes("email format") ||
-    lower.includes("must be a valid email")
-  ) {
-    return {
-      message: "Format email tidak valid.",
-      code: "INVALID_EMAIL",
-    };
-  }
-  if (
-    lower.includes("password") &&
-    (lower.includes("short") || lower.includes("weak") || lower.includes("8"))
-  ) {
-    return {
-      message: "Password minimal 8 karakter.",
-      code: "WEAK_PASSWORD",
-    };
-  }
-  if (
-    lower.includes("wrong password") ||
-    lower.includes("incorrect password") ||
-    lower.includes("invalid password")
-  ) {
-    return {
-      message: "Password salah. Coba lagi.",
-      code: "WRONG_PASSWORD",
     };
   }
   if (status === 404) {
@@ -156,16 +140,37 @@ async function request<T>(
   return data as T;
 }
 
+type LoginPayload =
+  | { username: string; password: string }
+  | { username: string; api_key: string }
+  | { api_key: string };
+
 export const api = {
-  register: (email: string, password: string) =>
-    request<{ message: string; api_key: string }>("/register", null, {
-      method: "POST",
-      body: { email, password },
-    }),
+  register: (username: string, password: string) =>
+    request<{ message: string; api_key: string; username: string; id: string }>(
+      "/register",
+      null,
+      {
+        method: "POST",
+        body: { username, password },
+      },
+    ),
+  login: (payload: LoginPayload) =>
+    request<Profile>("/login", null, { method: "POST", body: payload }),
   me: (apiKey: string) => request<Profile>("/me", apiKey),
   usage: (apiKey: string) => request<Usage>("/usage", apiKey),
   regenerateKey: (apiKey: string) =>
     request<{ api_key: string }>("/regenerate-key", apiKey, { method: "POST" }),
+  updateUsername: (apiKey: string, username: string) =>
+    request<{ username: string }>("/update-username", apiKey, {
+      method: "POST",
+      body: { username },
+    }),
+  updatePassword: (apiKey: string, password: string) =>
+    request<{ message: string }>("/update-password", apiKey, {
+      method: "POST",
+      body: { password },
+    }),
 
   search: async (
     apiKey: string,

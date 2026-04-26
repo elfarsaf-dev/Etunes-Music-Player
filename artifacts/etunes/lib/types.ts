@@ -25,6 +25,7 @@ export type Profile = {
   id: string;
   api_key: string;
   is_premium: boolean;
+  username?: string;
 };
 
 export type Usage = {

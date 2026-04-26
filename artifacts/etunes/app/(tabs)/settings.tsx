@@ -4,11 +4,16 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import React, { useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -18,18 +23,31 @@ import { useLibrary } from "@/contexts/LibraryContext";
 import { usePlayer } from "@/contexts/PlayerContext";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useColors, useRadius } from "@/hooks/useColors";
+import { ApiError } from "@/lib/api";
+
+type EditTarget = "username" | "password" | null;
 
 export default function SettingsScreen() {
   const colors = useColors();
   const radius = useRadius();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { profile, usage, apiKey, refresh, regenerate, signOut } = useAuth();
+  const {
+    profile,
+    usage,
+    apiKey,
+    refresh,
+    regenerate,
+    signOut,
+    updateUsername,
+    updatePassword,
+  } = useAuth();
   const { stop } = usePlayer();
   const { downloads, downloadedTracks } = useLibrary();
   const { theme, themes, setThemeId } = useTheme();
   const [showKey, setShowKey] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [editTarget, setEditTarget] = useState<EditTarget>(null);
 
   const handleCopy = async () => {
     if (!apiKey) return;
@@ -121,9 +139,11 @@ export default function SettingsScreen() {
               <Feather name="user" size={26} color="#fff" />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.profileLabel}>Account</Text>
+              <Text style={styles.profileLabel}>
+                {profile?.username ? "Username" : "Account"}
+              </Text>
               <Text style={styles.profileId} numberOfLines={1}>
-                ID #{profile?.id ?? "—"}
+                {profile?.username ?? `ID #${profile?.id ?? "—"}`}
               </Text>
             </View>
             <View
@@ -320,6 +340,40 @@ export default function SettingsScreen() {
         >
           <Pressable
             style={styles.row}
+            onPress={() => setEditTarget("username")}
+            android_ripple={{ color: colors.muted }}
+          >
+            <Feather name="user" size={20} color={colors.primary} />
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.rowTitle, { color: colors.foreground }]}>
+                Ubah username
+              </Text>
+              <Text
+                style={[styles.rowMono, { color: colors.mutedForeground }]}
+                numberOfLines={1}
+              >
+                {profile?.username ?? "Belum ada username"}
+              </Text>
+            </View>
+            <Feather name="edit-2" size={16} color={colors.mutedForeground} />
+          </Pressable>
+          <View style={[styles.divider, { backgroundColor: colors.border }]} />
+          <Pressable
+            style={styles.row}
+            onPress={() => setEditTarget("password")}
+            android_ripple={{ color: colors.muted }}
+          >
+            <Feather name="lock" size={20} color={colors.primary} />
+            <Text
+              style={[styles.rowTitle, { color: colors.foreground, flex: 1 }]}
+            >
+              Ubah password
+            </Text>
+            <Feather name="edit-2" size={16} color={colors.mutedForeground} />
+          </Pressable>
+          <View style={[styles.divider, { backgroundColor: colors.border }]} />
+          <Pressable
+            style={styles.row}
             onPress={refresh}
             android_ripple={{ color: colors.muted }}
           >
@@ -349,7 +403,213 @@ export default function SettingsScreen() {
           etunes — made with ♪
         </Text>
       </ScrollView>
+
+      <EditFieldModal
+        target={editTarget}
+        currentUsername={profile?.username ?? ""}
+        onClose={() => setEditTarget(null)}
+        onSubmitUsername={updateUsername}
+        onSubmitPassword={updatePassword}
+      />
     </View>
+  );
+}
+
+function EditFieldModal({
+  target,
+  currentUsername,
+  onClose,
+  onSubmitUsername,
+  onSubmitPassword,
+}: {
+  target: EditTarget;
+  currentUsername: string;
+  onClose: () => void;
+  onSubmitUsername: (v: string) => Promise<void>;
+  onSubmitPassword: (v: string) => Promise<void>;
+}) {
+  const colors = useColors();
+  const radius = useRadius();
+  const insets = useSafeAreaInsets();
+
+  const [value, setValue] = useState("");
+  const [show, setShow] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  const visible = target !== null;
+
+  React.useEffect(() => {
+    if (visible) {
+      setValue(target === "username" ? currentUsername : "");
+      setError(null);
+      setDone(false);
+      setShow(false);
+    }
+  }, [visible, target, currentUsername]);
+
+  const handleSave = async () => {
+    setError(null);
+    const v = value.trim();
+    if (!v) {
+      setError("Gak boleh kosong.");
+      return;
+    }
+    setLoading(true);
+    try {
+      if (target === "username") {
+        await onSubmitUsername(v);
+      } else if (target === "password") {
+        await onSubmitPassword(v);
+      }
+      setDone(true);
+      setTimeout(() => onClose(), 700);
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : "Gagal disimpan.";
+      setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const titleText =
+    target === "username" ? "Ubah username" : "Ubah password";
+  const labelText = target === "username" ? "Username baru" : "Password baru";
+  const placeholder =
+    target === "username"
+      ? "Username baru kamu"
+      : "Bebas, tanpa batas minimal";
+
+  return (
+    <Modal
+      visible={visible}
+      animationType="fade"
+      transparent
+      onRequestClose={onClose}
+    >
+      <Pressable style={styles.modalBackdrop} onPress={onClose} />
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        style={styles.modalWrap}
+        pointerEvents="box-none"
+      >
+        <View
+          style={[
+            styles.modalCard,
+            {
+              backgroundColor: colors.cardElevated,
+              borderRadius: radius * 1.4,
+              borderColor: colors.border,
+              marginBottom: insets.bottom + 24,
+            },
+          ]}
+        >
+          <View style={styles.modalHeader}>
+            <Text style={[styles.modalTitle, { color: colors.foreground }]}>
+              {titleText}
+            </Text>
+            <Pressable onPress={onClose} hitSlop={10}>
+              <Feather name="x" size={20} color={colors.mutedForeground} />
+            </Pressable>
+          </View>
+
+          <Text style={[styles.modalLabel, { color: colors.mutedForeground }]}>
+            {labelText}
+          </Text>
+          <View
+            style={[
+              styles.modalField,
+              { backgroundColor: colors.muted, borderRadius: radius },
+            ]}
+          >
+            <Feather
+              name={target === "username" ? "user" : "lock"}
+              size={18}
+              color={colors.mutedForeground}
+            />
+            <TextInput
+              value={value}
+              onChangeText={(t) => {
+                setValue(t);
+                if (error) setError(null);
+              }}
+              placeholder={placeholder}
+              placeholderTextColor={colors.mutedForeground}
+              autoCapitalize="none"
+              secureTextEntry={target === "password" && !show}
+              autoFocus
+              style={[
+                styles.modalInput,
+                { color: colors.foreground, fontFamily: "Inter_500Medium" },
+              ]}
+            />
+            {target === "password" ? (
+              <Pressable onPress={() => setShow((s) => !s)} hitSlop={10}>
+                <Feather
+                  name={show ? "eye-off" : "eye"}
+                  size={18}
+                  color={colors.mutedForeground}
+                />
+              </Pressable>
+            ) : null}
+          </View>
+
+          {error ? (
+            <Text style={[styles.modalError, { color: colors.destructive }]}>
+              {error}
+            </Text>
+          ) : null}
+
+          <Pressable
+            onPress={handleSave}
+            disabled={loading || done}
+            style={({ pressed }) => [
+              styles.modalSubmit,
+              {
+                backgroundColor: colors.primary,
+                borderRadius: radius,
+                opacity: pressed || loading || done ? 0.7 : 1,
+              },
+            ]}
+          >
+            {loading ? (
+              <ActivityIndicator color={colors.primaryForeground} />
+            ) : done ? (
+              <View style={styles.modalDoneRow}>
+                <Feather
+                  name="check"
+                  size={16}
+                  color={colors.primaryForeground}
+                />
+                <Text
+                  style={[
+                    styles.modalSubmitText,
+                    { color: colors.primaryForeground },
+                  ]}
+                >
+                  Tersimpan
+                </Text>
+              </View>
+            ) : (
+              <Text
+                style={[
+                  styles.modalSubmitText,
+                  { color: colors.primaryForeground },
+                ]}
+              >
+                Simpan
+              </Text>
+            )}
+          </Pressable>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
   );
 }
 
@@ -484,5 +744,58 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
+  },
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.55)",
+  },
+  modalWrap: {
+    flex: 1,
+    justifyContent: "flex-end",
+    paddingHorizontal: 16,
+  },
+  modalCard: {
+    padding: 18,
+    gap: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  modalTitle: {
+    fontSize: 17,
+    fontFamily: "Inter_700Bold",
+  },
+  modalLabel: {
+    fontSize: 11,
+    fontFamily: "Inter_600SemiBold",
+    letterSpacing: 0.5,
+    textTransform: "uppercase",
+  },
+  modalField: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 14,
+    height: 50,
+    gap: 10,
+  },
+  modalInput: { flex: 1, fontSize: 15 },
+  modalError: {
+    fontSize: 12,
+    fontFamily: "Inter_500Medium",
+  },
+  modalSubmit: {
+    height: 48,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 4,
+  },
+  modalSubmitText: { fontSize: 14, fontFamily: "Inter_700Bold" },
+  modalDoneRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
 });

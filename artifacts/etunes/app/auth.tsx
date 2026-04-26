@@ -1,7 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
-import React, { useMemo, useState } from "react";
+import React, { useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -19,85 +19,61 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useColors, useRadius } from "@/hooks/useColors";
 import { ApiError } from "@/lib/api";
 
-type Mode = "register" | "key";
-
-const PASSWORD_MIN_LEN = 8;
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+type Mode = "register" | "login";
+type LoginCred = "password" | "key";
 
 export default function AuthScreen() {
   const colors = useColors();
   const radius = useRadius();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { register, setApiKey } = useAuth();
+  const { register, login } = useAuth();
 
   const [mode, setMode] = useState<Mode>("register");
-  const [email, setEmail] = useState("");
+  const [loginCred, setLoginCred] = useState<LoginCred>("password");
+
+  // Shared field state
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [keyInput, setKeyInput] = useState("");
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [submitted, setSubmitted] = useState(false);
-  // Set when register hits EMAIL_TAKEN — used to show a friendly notice
-  // on the API key tab so the user knows why they were redirected.
-  const [takenEmail, setTakenEmail] = useState<string | null>(null);
-
-  const trimmedEmail = email.trim();
-  const trimmedKey = keyInput.trim();
-
-  const emailError = useMemo(() => {
-    if (!submitted && !trimmedEmail) return null;
-    if (!trimmedEmail) return "Email wajib diisi.";
-    if (!EMAIL_RE.test(trimmedEmail)) return "Format email tidak valid.";
-    return null;
-  }, [trimmedEmail, submitted]);
-
-  const passwordError = useMemo(() => {
-    if (!submitted && !password) return null;
-    if (!password) return "Password wajib diisi.";
-    if (password.length < PASSWORD_MIN_LEN)
-      return `Password minimal ${PASSWORD_MIN_LEN} karakter.`;
-    return null;
-  }, [password, submitted]);
-
-  const keyError = useMemo(() => {
-    if (!submitted && !trimmedKey) return null;
-    if (!trimmedKey) return "API key wajib diisi.";
-    if (trimmedKey.length < 8) return "API key terlalu pendek.";
-    return null;
-  }, [trimmedKey, submitted]);
-
-  const formInvalid =
-    mode === "register" ? !!(emailError || passwordError) : !!keyError;
+  // Set when register hits USERNAME_TAKEN — used to nudge the user to login.
+  const [takenUsername, setTakenUsername] = useState<string | null>(null);
 
   const handleSubmit = async () => {
-    setSubmitted(true);
     setError(null);
+    const u = username.trim();
+    const k = keyInput.trim();
 
-    if (mode === "register") {
-      if (emailError || passwordError) return;
-    } else if (keyError) {
-      return;
-    }
-
-    setLoading(true);
     try {
       if (mode === "register") {
-        await register(trimmedEmail, password);
+        if (!u) return setError("Username wajib diisi.");
+        if (!password) return setError("Password wajib diisi.");
+        setLoading(true);
+        await register(u, password);
+      } else if (loginCred === "password") {
+        if (!u) return setError("Username wajib diisi.");
+        if (!password) return setError("Password wajib diisi.");
+        setLoading(true);
+        await login({ username: u, password });
       } else {
-        await setApiKey(trimmedKey);
+        // key mode — username opsional
+        if (!k) return setError("API key wajib diisi.");
+        setLoading(true);
+        if (u) await login({ username: u, apiKey: k });
+        else await login({ apiKey: k });
       }
       router.replace("/(tabs)");
     } catch (err) {
-      // If the email is already registered, fall back to the API key
-      // form so the user knows they should sign in instead.
-      if (err instanceof ApiError && err.code === "EMAIL_TAKEN") {
-        setTakenEmail(trimmedEmail);
-        setMode("key");
-        setSubmitted(false);
+      // username sudah dipakai → otomatis pindah ke tab Masuk
+      if (err instanceof ApiError && err.code === "USERNAME_TAKEN") {
+        setTakenUsername(u);
+        setMode("login");
+        setLoginCred("password");
         setError(null);
-        setPassword("");
         setLoading(false);
         return;
       }
@@ -116,9 +92,7 @@ export default function AuthScreen() {
   const switchMode = (next: Mode) => {
     setMode(next);
     setError(null);
-    setSubmitted(false);
-    // Clear the "email taken" notice if the user manually navigates back.
-    if (next === "register") setTakenEmail(null);
+    if (next === "register") setTakenUsername(null);
   };
 
   return (
@@ -135,7 +109,7 @@ export default function AuthScreen() {
         <ScrollView
           contentContainerStyle={[
             styles.content,
-            { paddingTop: insets.top + 80, paddingBottom: insets.bottom + 24 },
+            { paddingTop: insets.top + 60, paddingBottom: insets.bottom + 24 },
           ]}
           keyboardShouldPersistTaps="handled"
         >
@@ -190,10 +164,10 @@ export default function AuthScreen() {
                 </Text>
               </Pressable>
               <Pressable
-                onPress={() => switchMode("key")}
+                onPress={() => switchMode("login")}
                 style={[
                   styles.tab,
-                  mode === "key" && {
+                  mode === "login" && {
                     backgroundColor: colors.background,
                     borderRadius: radius,
                   },
@@ -204,13 +178,13 @@ export default function AuthScreen() {
                     styles.tabText,
                     {
                       color:
-                        mode === "key"
+                        mode === "login"
                           ? colors.foreground
                           : colors.mutedForeground,
                     },
                   ]}
                 >
-                  Punya API key
+                  Masuk
                 </Text>
               </Pressable>
             </View>
@@ -218,22 +192,20 @@ export default function AuthScreen() {
             {mode === "register" ? (
               <View style={styles.form}>
                 <Field
-                  icon="mail"
-                  label="Email"
-                  placeholder="kamu@email.com"
-                  value={email}
+                  icon="user"
+                  label="Username"
+                  placeholder="Pilih username"
+                  value={username}
                   onChangeText={(t) => {
-                    setEmail(t);
+                    setUsername(t);
                     if (error) setError(null);
                   }}
-                  keyboardType="email-address"
                   autoCapitalize="none"
-                  errorText={emailError}
                 />
                 <Field
                   icon="lock"
                   label="Password"
-                  placeholder="Minimal 8 karakter"
+                  placeholder="Bebas, gak ada batas minimal"
                   value={password}
                   onChangeText={(t) => {
                     setPassword(t);
@@ -242,17 +214,12 @@ export default function AuthScreen() {
                   secure={!showPassword}
                   rightIcon={showPassword ? "eye-off" : "eye"}
                   onRightIconPress={() => setShowPassword((v) => !v)}
-                  errorText={passwordError}
-                  helperText={
-                    !passwordError
-                      ? `Minimal ${PASSWORD_MIN_LEN} karakter, kombinasi huruf & angka lebih aman.`
-                      : undefined
-                  }
+                  helperText="Pakai apa aja, makin panjang makin aman."
                 />
               </View>
             ) : (
               <View style={styles.form}>
-                {takenEmail ? (
+                {takenUsername ? (
                   <View
                     style={[
                       styles.noticeBox,
@@ -269,38 +236,91 @@ export default function AuthScreen() {
                       color={colors.mutedForeground}
                     />
                     <Text
-                      style={[
-                        styles.noticeText,
-                        { color: colors.foreground },
-                      ]}
+                      style={[styles.noticeText, { color: colors.foreground }]}
                     >
-                      Email{" "}
+                      Username{" "}
                       <Text style={{ fontFamily: "Inter_700Bold" }}>
-                        {takenEmail}
+                        {takenUsername}
                       </Text>{" "}
-                      sudah terdaftar. Masukin API key kamu di bawah buat
-                      masuk.
+                      udah ada. Masuk pakai password atau API key kamu.
                     </Text>
                   </View>
                 ) : null}
-                <Field
-                  icon="key"
-                  label="API key"
-                  placeholder="xxxx-xxxx-xxxx-xxxx"
-                  value={keyInput}
-                  onChangeText={(t) => {
-                    setKeyInput(t);
-                    if (error) setError(null);
-                  }}
-                  autoCapitalize="none"
-                  monospace
-                  errorText={keyError}
-                  helperText={
-                    !keyError
-                      ? "Pakai API key yang kamu dapat saat daftar."
-                      : undefined
-                  }
-                />
+
+                <View style={styles.credPills}>
+                  <CredPill
+                    active={loginCred === "password"}
+                    onPress={() => {
+                      setLoginCred("password");
+                      setError(null);
+                    }}
+                    label="Password"
+                  />
+                  <CredPill
+                    active={loginCred === "key"}
+                    onPress={() => {
+                      setLoginCred("key");
+                      setError(null);
+                    }}
+                    label="API key"
+                  />
+                </View>
+
+                {loginCred === "password" ? (
+                  <>
+                    <Field
+                      icon="user"
+                      label="Username"
+                      placeholder="Username kamu"
+                      value={username}
+                      onChangeText={(t) => {
+                        setUsername(t);
+                        if (error) setError(null);
+                      }}
+                      autoCapitalize="none"
+                    />
+                    <Field
+                      icon="lock"
+                      label="Password"
+                      placeholder="Password kamu"
+                      value={password}
+                      onChangeText={(t) => {
+                        setPassword(t);
+                        if (error) setError(null);
+                      }}
+                      secure={!showPassword}
+                      rightIcon={showPassword ? "eye-off" : "eye"}
+                      onRightIconPress={() => setShowPassword((v) => !v)}
+                    />
+                  </>
+                ) : (
+                  <>
+                    <Field
+                      icon="user"
+                      label="Username (opsional)"
+                      placeholder="Boleh kosong kalau lupa"
+                      value={username}
+                      onChangeText={(t) => {
+                        setUsername(t);
+                        if (error) setError(null);
+                      }}
+                      autoCapitalize="none"
+                    />
+                    <Field
+                      icon="key"
+                      label="API key"
+                      placeholder="xxxx-xxxx-xxxx-xxxx"
+                      value={keyInput}
+                      onChangeText={(t) => {
+                        setKeyInput(t);
+                        if (error) setError(null);
+                      }}
+                      autoCapitalize="none"
+                      monospace
+                      helperText="Pakai API key yang kamu dapat saat daftar."
+                    />
+                  </>
+                )}
               </View>
             )}
 
@@ -328,13 +348,12 @@ export default function AuthScreen() {
 
             <Pressable
               onPress={handleSubmit}
-              disabled={loading || (submitted && formInvalid)}
+              disabled={loading}
               style={({ pressed }) => [
                 styles.submit,
                 {
                   borderRadius: radius,
-                  opacity:
-                    pressed || loading || (submitted && formInvalid) ? 0.7 : 1,
+                  opacity: pressed || loading ? 0.7 : 1,
                 },
               ]}
             >
@@ -360,6 +379,41 @@ export default function AuthScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
     </View>
+  );
+}
+
+function CredPill({
+  active,
+  onPress,
+  label,
+}: {
+  active: boolean;
+  onPress: () => void;
+  label: string;
+}) {
+  const colors = useColors();
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.credPill,
+        {
+          backgroundColor: active ? colors.primary : "transparent",
+          borderColor: active ? colors.primary : colors.border,
+          opacity: pressed ? 0.8 : 1,
+        },
+      ]}
+    >
+      <Text
+        style={{
+          color: active ? colors.primaryForeground : colors.foreground,
+          fontFamily: "Inter_600SemiBold",
+          fontSize: 12,
+        }}
+      >
+        {label}
+      </Text>
+    </Pressable>
   );
 }
 
@@ -455,7 +509,7 @@ function Field({
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  content: { paddingHorizontal: 22, gap: 28 },
+  content: { paddingHorizontal: 22, gap: 22 },
   brand: { alignItems: "center", gap: 10 },
   logo: {
     width: 76,
@@ -496,6 +550,16 @@ const styles = StyleSheet.create({
   },
   tabText: { fontFamily: "Inter_600SemiBold", fontSize: 13 },
   form: { gap: 12 },
+  credPills: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  credPill: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
   fieldLabel: {
     fontSize: 11,
     fontFamily: "Inter_600SemiBold",
