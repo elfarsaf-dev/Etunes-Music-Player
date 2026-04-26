@@ -24,6 +24,7 @@ import Animated, {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AddToPlaylistSheet } from "@/components/AddToPlaylistSheet";
+import { LyricsView } from "@/components/LyricsView";
 import { useAuth } from "@/contexts/AuthContext";
 import { useLibrary } from "@/contexts/LibraryContext";
 import { usePlayer } from "@/contexts/PlayerContext";
@@ -62,6 +63,7 @@ export default function PlayerScreen() {
     removeDownload,
   } = useLibrary();
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [showLyrics, setShowLyrics] = useState(false);
 
   const dlState = current ? downloadStatus[current.id] : undefined;
   const downloaded = current ? isDownloaded(current.id) : false;
@@ -221,27 +223,41 @@ export default function PlayerScreen() {
           <View style={styles.swipeBar} />
         </View>
 
-        <View style={styles.artContainer}>
-          <Animated.View style={[styles.artWrap, artStyle]}>
-            {current.thumbnail ? (
-              <Image
-                source={{ uri: current.thumbnail }}
-                style={styles.art}
-                contentFit="cover"
-              />
-            ) : (
-              <LinearGradient
-                colors={[colors.gradientStart, colors.gradientEnd]}
-                style={styles.art}
-              >
-                <Feather name="music" size={80} color="rgba(255,255,255,0.85)" />
-              </LinearGradient>
-            )}
-            <View
-              style={[styles.artHole, { backgroundColor: colors.background }]}
+        {showLyrics ? (
+          <View style={styles.lyricsContainer}>
+            <LyricsView
+              track={current}
+              position={position}
+              onSeek={seekTo}
             />
-          </Animated.View>
-        </View>
+          </View>
+        ) : (
+          <View style={styles.artContainer}>
+            <Animated.View style={[styles.artWrap, artStyle]}>
+              {current.thumbnail ? (
+                <Image
+                  source={{ uri: current.thumbnail }}
+                  style={styles.art}
+                  contentFit="cover"
+                />
+              ) : (
+                <LinearGradient
+                  colors={[colors.gradientStart, colors.gradientEnd]}
+                  style={styles.art}
+                >
+                  <Feather
+                    name="music"
+                    size={80}
+                    color="rgba(255,255,255,0.85)"
+                  />
+                </LinearGradient>
+              )}
+              <View
+                style={[styles.artHole, { backgroundColor: colors.background }]}
+              />
+            </Animated.View>
+          </View>
+        )}
 
         <View style={styles.info}>
           <Text style={styles.title} numberOfLines={1}>
@@ -398,6 +414,28 @@ export default function PlayerScreen() {
             </Pressable>
           ) : null}
           <Pressable
+            onPress={() => setShowLyrics((v) => !v)}
+            style={({ pressed }) => [
+              styles.bottomBtn,
+              { opacity: pressed ? 0.6 : 1 },
+            ]}
+            hitSlop={6}
+          >
+            <Feather
+              name="align-left"
+              size={20}
+              color={showLyrics ? colors.accent : "#fff"}
+            />
+            <Text
+              style={[
+                styles.bottomLabel,
+                showLyrics ? { color: colors.accent } : null,
+              ]}
+            >
+              Lirik
+            </Text>
+          </Pressable>
+          <Pressable
             onPress={() => setPickerOpen(true)}
             style={({ pressed }) => [
               styles.bottomBtn,
@@ -471,6 +509,11 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   artContainer: { alignItems: "center", marginTop: 22 },
+  lyricsContainer: {
+    alignSelf: "stretch",
+    height: ART_SIZE + 40,
+    marginTop: 8,
+  },
   artWrap: {
     width: ART_SIZE,
     height: ART_SIZE,

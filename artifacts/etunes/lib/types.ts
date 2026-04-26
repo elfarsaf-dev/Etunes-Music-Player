@@ -49,3 +49,19 @@ export type DownloadRecord = {
   size?: number;
   downloadedAt: number;
 };
+
+export type LyricLine = {
+  /** Start time in seconds. 0 for unsynced lines. */
+  time: number;
+  text: string;
+};
+
+export type LyricsResult = {
+  trackName: string;
+  artistName: string;
+  albumName?: string;
+  /** Parsed synced lyrics (LRC). Empty if unavailable. */
+  synced: LyricLine[];
+  /** Plain-text lyrics, line-split. */
+  plain: string[];
+};
