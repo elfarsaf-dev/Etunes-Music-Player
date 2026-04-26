@@ -42,7 +42,13 @@ function friendlyError(rawMessage: string, status: number): { message: string; c
     status === 409 ||
     lower.includes("already exists") ||
     lower.includes("already registered") ||
-    lower.includes("duplicate")
+    lower.includes("duplicate") ||
+    // The Cloudflare worker returns 500 with this generic message whenever
+    // the email is already in its DB (it doesn't differentiate). Treating
+    // this as EMAIL_TAKEN lets the client fall back to the API key form
+    // instead of dead-ending on "Server bermasalah".
+    lower.includes("gagal register") ||
+    lower.includes("register failed")
   ) {
     return {
       message: "Email sudah terdaftar. Coba masuk pakai API key kamu.",
