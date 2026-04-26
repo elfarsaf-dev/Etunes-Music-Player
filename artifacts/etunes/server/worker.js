@@ -15,17 +15,31 @@
  *   POST /update-password   (x-api-key) { password }
  *
  * ===============================================================
- * SCHEMA SUPABASE (`mc_profiles`)
- * Tambah kolom berikut sebelum deploy:
+ * SCHEMA SUPABASE
+ * Tambah kolom & tabel berikut sebelum deploy:
  *
  *   ALTER TABLE mc_profiles ADD COLUMN username TEXT UNIQUE;
  *   ALTER TABLE mc_profiles ADD COLUMN email TEXT;
+ *   ALTER TABLE mc_profiles ADD COLUMN signup_ip TEXT;
+ *   ALTER TABLE mc_profiles ADD COLUMN last_login_ip TEXT;
+ *   ALTER TABLE mc_profiles ADD COLUMN last_login_at TIMESTAMPTZ;
  *   CREATE INDEX IF NOT EXISTS idx_mc_profiles_username ON mc_profiles(username);
+ *   CREATE INDEX IF NOT EXISTS idx_mc_profiles_signup_ip ON mc_profiles(signup_ip);
+ *
+ *   -- Tabel blocklist IP. Hapus baris kalau mau unblock.
+ *   CREATE TABLE IF NOT EXISTS mc_blocked_ips (
+ *     ip TEXT PRIMARY KEY,
+ *     reason TEXT,
+ *     blocked_at TIMESTAMPTZ DEFAULT now()
+ *   );
  *
  * Untuk akun lama (yang belum punya username), bisa di-backfill manual,
  * atau biarkan login pakai api_key aja (tetap jalan tanpa username).
  * ===============================================================
  */
+
+// Maks akun yang boleh dibuat dari 1 IP. Naikan kalau perlu.
+const MAX_ACCOUNTS_PER_IP = 3
 
 // ============================
 // RATE LIMIT MEMORY
@@ -110,6 +124,25 @@ export default {
         return json({ error: "Username & password wajib" }, 400)
       }
 
+      // ---- IP block check ----
+      if (await isBlockedIp(sb, ip)) {
+        return json(
+          { error: "IP kamu diblokir karena penyalahgunaan." },
+          403
+        )
+      }
+
+      // ---- IP account-cap check ----
+      const ipCount = await countAccountsByIp(sb, ip)
+      if (ipCount >= MAX_ACCOUNTS_PER_IP) {
+        return json(
+          {
+            error: `Sudah ada ${ipCount} akun dari jaringan ini. Maksimal ${MAX_ACCOUNTS_PER_IP} akun per IP.`
+          },
+          429
+        )
+      }
+
       // cek username unik
       const dup = await sb(
         `/rest/v1/mc_profiles?username=eq.${encodeURIComponent(username)}&select=id`
@@ -137,6 +170,7 @@ export default {
 
       const userId = data.user.id
       const apiKey = generateApiKey()
+      const nowIso = new Date().toISOString()
 
       await sb(`/rest/v1/mc_profiles`, {
         method: "POST",
@@ -146,7 +180,10 @@ export default {
           api_key: apiKey,
           username,
           email,
-          is_premium: false
+          is_premium: false,
+          signup_ip: ip,
+          last_login_ip: ip,
+          last_login_at: nowIso
         })
       })
 
@@ -171,6 +208,13 @@ export default {
       const password = body.password || ""
       const providedKey = (body.api_key || "").trim()
 
+      if (await isBlockedIp(sb, ip)) {
+        return json(
+          { error: "IP kamu diblokir karena penyalahgunaan." },
+          403
+        )
+      }
+
       // ---- Path A: key aja, tanpa username ----
       if (!username && providedKey) {
         const r = await sb(
@@ -179,6 +223,7 @@ export default {
         const rows = await r.json().catch(() => [])
         const profile = Array.isArray(rows) ? rows[0] : null
         if (!profile) return json({ error: "API key tidak valid" }, 401)
+        await recordLogin(sb, profile.id, ip)
         return json(stripProfile(profile))
       }
 
@@ -199,6 +244,7 @@ export default {
         if (profile.api_key !== providedKey) {
           return json({ error: "API key salah" }, 401)
         }
+        await recordLogin(sb, profile.id, ip)
         return json(stripProfile(profile))
       }
 
@@ -224,6 +270,7 @@ export default {
         if (!tokenRes.ok) {
           return json({ error: "Password salah" }, 401)
         }
+        await recordLogin(sb, profile.id, ip)
         return json(stripProfile(profile))
       }
 
@@ -415,6 +462,62 @@ export default {
 // ============================
 // HELPERS
 // ============================
+
+/**
+ * True kalau IP ada di tabel mc_blocked_ips.
+ * Aman kalau tabel belum dibuat — anggap tidak diblokir.
+ */
+async function isBlockedIp(sb, ip) {
+  if (!ip || ip === "unknown") return false
+  try {
+    const r = await sb(
+      `/rest/v1/mc_blocked_ips?ip=eq.${encodeURIComponent(ip)}&select=ip&limit=1`
+    )
+    if (!r.ok) return false
+    const rows = await r.json().catch(() => [])
+    return Array.isArray(rows) && rows.length > 0
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Hitung berapa akun di mc_profiles yang signup dari IP ini.
+ * Pakai header Prefer: count=exact untuk efisiensi.
+ */
+async function countAccountsByIp(sb, ip) {
+  if (!ip || ip === "unknown") return 0
+  try {
+    const r = await sb(
+      `/rest/v1/mc_profiles?signup_ip=eq.${encodeURIComponent(ip)}&select=id`,
+      { headers: { Prefer: "count=exact" } }
+    )
+    const range = r.headers.get("content-range") || ""
+    // format: "0-0/N" atau "*/N"
+    const m = range.match(/\/(\d+)$/)
+    if (m) return Number(m[1])
+    const rows = await r.json().catch(() => [])
+    return Array.isArray(rows) ? rows.length : 0
+  } catch {
+    return 0
+  }
+}
+
+/** Catat last_login_ip & last_login_at di profil. Best-effort. */
+async function recordLogin(sb, userId, ip) {
+  try {
+    await sb(`/rest/v1/mc_profiles?id=eq.${userId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        last_login_ip: ip || null,
+        last_login_at: new Date().toISOString()
+      })
+    })
+  } catch {
+    // diam aja, jangan ganggu login
+  }
+}
 
 function stripProfile(p) {
   return {
