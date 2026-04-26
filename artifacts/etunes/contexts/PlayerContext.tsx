@@ -257,20 +257,42 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     async (tracks: Track[], startIndex = 0) => {
       if (tracks.length === 0) return;
       const idx = Math.max(0, Math.min(startIndex, tracks.length - 1));
+      const target = tracks[idx];
+      // If the user taps the song that's already loaded, just resume (or
+      // keep playing) — don't restart from the beginning. Still refresh
+      // the queue so subsequent next/prev follow the new list.
+      if (currentRef.current?.id === target.id && status !== "error") {
+        setQueue(tracks);
+        setQueueIndex(idx);
+        if (status === "paused") {
+          playerRef.current?.play();
+          setStatus("playing");
+        }
+        return;
+      }
       setQueue(tracks);
       setQueueIndex(idx);
-      await loadAndPlay(tracks[idx]);
+      await loadAndPlay(target);
     },
-    [loadAndPlay],
+    [loadAndPlay, status],
   );
 
   const playTrack = useCallback(
     async (track: Track) => {
+      // Tapping the currently-loaded track shouldn't restart it. Resume if
+      // paused; otherwise leave playback alone.
+      if (currentRef.current?.id === track.id && status !== "error") {
+        if (status === "paused") {
+          playerRef.current?.play();
+          setStatus("playing");
+        }
+        return;
+      }
       setQueue([track]);
       setQueueIndex(0);
       await loadAndPlay(track);
     },
-    [loadAndPlay],
+    [loadAndPlay, status],
   );
 
   const pause = useCallback(() => {
